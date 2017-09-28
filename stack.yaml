@@ -1,0 +1,7 @@
+resolver: lts-9.1
+packages:
+- location: '.'
+extra-deps:
+- mm-containers-0.1
+flags: {}
+extra-package-dbs: []

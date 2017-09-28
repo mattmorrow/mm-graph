@@ -1,0 +1,51 @@
+name:                 mm-graph
+version:              0.1
+cabal-version:        >=1.6
+build-type:           Simple
+license:              BSD3
+license-file:         LICENSE
+author:               Matthew Morrow
+maintainer:           Matthew Morrow <mjm2002@gmail.com>
+copyright:            (c) 2009-2017 Matthew Morrow
+homepage:             https://github.com/mattmorrow/mm-graph#readme
+category:             Data, Data Structures
+-- synopsis:
+-- description:
+extra-source-files:   README.md,
+                      include/mm_graph.h,
+                      include/mm_graph_compat.h
+source-repository head
+  type:     git
+  location: https://github.com/mattmorrow/mm-graph
+library
+  build-depends:      base >= 4 && < 5,
+                      mm-containers
+
+  ghc-options:        -O2 -funbox-strict-fields
+  ghc-prof-options:
+  cc-options:
+  hs-source-dirs:     src
+  include-dirs:       include
+  c-sources:
+  extra-libraries:
+  Extensions:
+                      CPP,
+                      BangPatterns,
+                      PatternGuards,
+                      UnboxedTuples,
+                      MultiParamTypeClasses,
+                      TypeSynonymInstances,
+                      FlexibleInstances,
+                      EmptyDataDecls,
+                      FunctionalDependencies
+                      RecordWildCards,
+                      NamedFieldPuns,
+                      StandaloneDeriving,
+                      ScopedTypeVariables,
+                      UndecidableInstances,
+                      RankNTypes
+
+  other-modules:
+  exposed-modules:
+                      MM.Data.Graph.Int
+
