@@ -5,6 +5,7 @@
       BangPatterns,
       OverlappingInstances,
       UndecidableInstances #-}
+#undef __DEBUG_ON
 #define __D deriving(Eq,Ord,Read,Show)
 #define __D_BE deriving(Eq,Ord,Read,Show,Bounded,Enum)
 #ifdef __DEBUG_ON
@@ -22,6 +23,8 @@
 #define __ASSERT_FAIL(note) __PANIC("ASSERT",note)
 #define __ASSERT_DO(cond)\
   (if (cond) then True else (__ASSERT_FAIL(#cond)))
+#define HASH #
+#define __INLINE(x)   {-HASH INLINE x HASH-}
 
 module MM.Data.Graph.Int (
    Graph,PredGraph,Node,NodeMap,NodeSet
@@ -32,18 +35,16 @@ module MM.Data.Graph.Int (
   ,fromAdj,toAdj
   ,quotientGraph,inducedSubgraph,inducedSubgraphs
 
-  ,PartRefine,EdgeLbl,EdgeLblMap,DeltaInv
-  ,partRefineInit -- :: Partition -> DeltaInv -> PartRefine
-  ,partRefineRefine -- :: PartRefine -> PartRefine
-
   ,DomTree(..),domTreeInit,domTreeRevPostOrder
   ,DomFront,domFrontInit,domFront
   ,DomFrontPlus,domFrontPlusInit,domFrontPlus
 
   ,SCC,SCCData,Cyclicity(..)
   ,sccInit
-  ,sccTopo
-  ,sccCyclicity,sccAcyclic,sccCyclic
+  ,sccTopo,sccTopoAssertAcyclic
+  ,sccGetCompNodes,sccGetNodeComp
+  ,sccAcyclicComps,sccCyclicComps,sccCompsWithCyclicity
+  ,sccAcyclicNodes,sccCyclicNodes,sccNodesWithCyclicity
 
   ,DFN,DFNEdge(..)
   ,dfnInit
@@ -51,6 +52,21 @@ module MM.Data.Graph.Int (
   ,dfnN2Pre,dfnN2Post,dfnPre2N,dfnPost2N
   ,dfnPre,dfnPost
   ,dfnPreOrder,dfnPostOrder,dfnRevPreOrder,dfnRevPostOrder
+
+  ,PartRefine,EdgeLbl,EdgeLblMap,DeltaInv
+  ,PartRefinePrep(..)
+  ,partRefineInit -- :: Partition -> DeltaInv -> PartRefine
+  ,partRefinePartition
+  ,partRefineDeltaInv
+  ,partRefineRefine -- :: PartRefine -> PartRefine
+
+  ,NodeKeyed(..),NodeKey(..)
+
+  ,shareOneLevel
+  ,shareAcyclic
+  ,shareCyclic
+  ,flattenAcyclicToOneLevel
+
 ) where
 
 import Prelude hiding(null)
@@ -71,7 +87,12 @@ import Control.Applicative(Applicative(..))
 import Control.Monad
 import Data.Function
 import Data.List(foldl')
-import MM.Data.Class.Lattice
+import MM.Data.Tree.Rose(Tree(..))
+import qualified MM.Control.Monad.S.U as SU
+import qualified MM.Control.Monad.S.U2 as SU2
+import qualified MM.Control.Monad.Class as N
+import MM.Data.Class.Empty
+import MM.Data.Class.List
 import MM.Data.Class.O
 
 -----------------------------------------------------------------------------
@@ -85,7 +106,7 @@ type PredGraph  = Graph
 
 data Components a = Comps
   {compsPart :: Partition
-  ,compsData :: IntMap a}
+  ,compsData :: a}
   __D
 
 type Partition  = (NodeMap Int, IntMap NodeSet)
@@ -154,7 +175,7 @@ toAdj = IM.toList . fmap IM.keys
 -----------------------------------------------------------------------------
 
 quotientGraph :: Graph -> Partition -> Graph
-quotientGraph g _ = undefined
+quotientGraph g _ = __FIXME("quotientGraph")
 
 inducedSubgraph :: Graph -> NodeSet -> Graph
 inducedSubgraph g ns = IM.foldWithKey (\i is acc->
@@ -233,6 +254,7 @@ idomInit_ succs root
   , preds <- invert succs
   = idomInit preds dfn root
 
+-- | The "Simple Fast" immediate dominators algorithm.
 idomInit :: PredGraph -> DFN -> Node -> NodeMap Node
 idomInit preds dfn root
   | dfnpost <- dfnN2Post dfn
@@ -310,10 +332,10 @@ data DomFront = DomFront
 -- >   return df
 -- > }
 domFrontInit :: DomTree -> DomFront
-domFrontInit dt = undefined
+domFrontInit dt = __FIXME("domFrontInit")
 
 domFront :: DomFront -> Node -> NodeSet
-domFront df i = undefined
+domFront df i = __FIXME("domFront")
 
 #if 0
 NOTE:
@@ -330,26 +352,44 @@ data DomFrontPlus = DomFrontPlus
   __D
 
 domFrontPlusInit :: DomFront -> DomFrontPlus
-domFrontPlusInit df = undefined
+domFrontPlusInit df = __FIXME("domFrontPlusInit")
 
 domFrontPlus :: DomFrontPlus -> Node -> (NodeSet, DomFrontPlus)
-domFrontPlus dfp i = undefined
+domFrontPlus dfp i = __FIXME("domFrontPlus")
 
 -----------------------------------------------------------------------------
 
 type SCC = Components SCCData
-type SCCData = Cyclicity
+data SCCData = SCCData
+  {sccDataTo :: IntMap Cyclicity
+  ,sccDataFrom :: Map Cyclicity (IntMap ())} __D
 data Cyclicity = Acyclic | Cyclic __D_BE
+instance Empty SCCData where
+  empty = SCCData empty empty
+  isEmpty o = o==empty
+instance Monoid SCCData where
+  mempty = SCCData mempty mempty
+  mappend (SCCData a1 b1) (SCCData a2 b2)
+    | !a <- mappend a1 a2
+    , !b <- mappend b1 b2
+    = SCCData a b
 
 sccInit :: Graph -> SCC
 sccInit g
   | sccs <- sccEnvSCCs (execSccM sccTarjanM (initSCCEnv g))
   , comps <- IM.fromList . zip [0..] . reverse $ sccs
   , compsPart <- toPartition comps
-  , compsData <- fmap go comps
+  , compsData <- IM.foldWithKey go mempty comps
   = Comps{..}
-  where go :: NodeSet -> SCCData
-        go ns
+  where go :: Int -> NodeSet -> SCCData -> SCCData
+        go comp ns SCCData{..}
+          | cyc <- cyclicity ns
+          , sccDataTo <- IM.insert comp cyc sccDataTo
+          , sccDataFrom <- M.insertWith (\/) cyc
+              (IM.singleton comp ()) sccDataFrom
+          = SCCData{..}
+        cyclicity :: NodeSet -> Cyclicity
+        cyclicity ns
           | Just ((n,_),rest) <- IM.minViewWithKey ns
           = case IM.null rest of
               False-> Cyclic
@@ -358,27 +398,47 @@ sccInit g
                 | otherwise-> Acyclic
           | otherwise = __IMPOSSIBLE
 
+sccGetCompNodes :: SCC -> Int -> NodeSet
+sccGetCompNodes Comps{compsPart=(_,c2ns)} comp = c2ns IM.! comp
+
+sccGetNodeComp :: SCC -> Node -> Int
+sccGetNodeComp Comps{compsPart=(n2c,_)} node = n2c IM.! node
+
+sccAcyclicComps :: SCC -> IntMap ()
+sccAcyclicComps = sccCompsWithCyclicity Acyclic
+
+sccCyclicComps :: SCC -> IntMap ()
+sccCyclicComps = sccCompsWithCyclicity Cyclic
+
+sccCompsWithCyclicity :: Cyclicity -> SCC -> IntMap ()
+sccCompsWithCyclicity cyc Comps{compsData=SCCData{..}}
+  = M.findWithDefault mempty cyc sccDataFrom
+
+sccAcyclicNodes :: SCC -> NodeSet
+sccAcyclicNodes = sccNodesWithCyclicity Acyclic
+
+sccCyclicNodes :: SCC -> NodeSet
+sccCyclicNodes = sccNodesWithCyclicity Cyclic
+
+sccNodesWithCyclicity :: Cyclicity -> SCC -> NodeSet
+sccNodesWithCyclicity cyc Comps{compsData=SCCData{..},..}
+  | comps <- M.findWithDefault mempty cyc sccDataFrom
+  , (_,c2ns) <- compsPart
+  , let go i _ o = o \/ (c2ns IM.! i)
+  = IM.foldWithKey go mempty comps
+
 sccTopo :: SCC -> [NodeSet]
 sccTopo Comps{compsPart} = fromPartition compsPart
 
-sccCyclicity :: SCC -> Map Cyclicity NodeSet
-sccCyclicity scc
-  | xa <- sccAcyclic scc
-  , xc <- sccCyclic scc
-  = M.fromList [(Acyclic, xa), (Cyclic, xc)]
-
-sccAcyclic :: SCC -> NodeSet
-sccAcyclic Comps{compsData} = IM.foldWithKey go mempty compsData
-  where go i Acyclic o = IM.insert i () o
-        go i _ o = o
-
-sccCyclic :: SCC -> NodeSet
-sccCyclic Comps{compsData} = IM.foldWithKey go mempty compsData
-  where go i Cyclic o = IM.insert i () o
-        go i _ o = o
+sccTopoAssertAcyclic :: SCC -> Either (IntMap ()) [Node]
+sccTopoAssertAcyclic scc
+  | cyclic <- sccCyclicComps scc
+  = case IM.null cyclic of
+      True-> Right (IM.keys =<< sccTopo scc)
+      False-> Left cyclic
 
 -- {{{
-type SccM a = SU SCCEnv a
+type SccM a = SU.S SCCEnv a
 data SCCEnv = SCCEnv
   {sccEnvGraph   :: Graph
   ,sccEnvIndex   :: NodeMap Int
@@ -387,7 +447,7 @@ data SCCEnv = SCCEnv
   ,sccEnvStack   :: [Node]
   ,sccEnvSCCs    :: [NodeSet]}
 execSccM :: SccM a -> SCCEnv -> SCCEnv
-execSccM m env | (_,env) <- execSU m 0 env = env
+execSccM m env | (_,(_,env)) <- N.runM m 0 env = env
 initSCCEnv :: Graph -> SCCEnv
 initSCCEnv g = SCCEnv
   {sccEnvGraph   = g
@@ -397,7 +457,7 @@ initSCCEnv g = SCCEnv
   ,sccEnvStack   = []
   ,sccEnvSCCs    = []}
 sccTarjanM :: SccM ()
-sccTarjanM = mapM_ go =<< gets (IM.keys . nodes . sccEnvGraph)
+sccTarjanM = mapM_ go =<< N.gets (IM.keys . nodes . sccEnvGraph)
   where go i = do
           o <- sccSeenM i
           case o of
@@ -427,31 +487,31 @@ sccDoSuccM i j = do
         True-> sccSetLowLinkToMin i =<< sccIndexM j
 sccPopToAndAddSccM :: Node -> SccM ()
 sccPopToAndAddSccM i = do
-  SCCEnv{..} <- get
+  SCCEnv{..} <- N.get
   case () of
     _ | (comp,sccEnvStack) <- split i sccEnvStack
       , !sccEnvStacked <- foldl' (flip IM.delete) sccEnvStacked comp
       , sccEnvSCCs <- IM.fromList (zip comp (repeat ())):sccEnvSCCs
       , !new <- SCCEnv{..}
-      -> set new
+      -> N.set new
   where split i js = go [] js
           where go acc [] = (acc,[])
                 go acc (j:js)
                   | i==j = (i:acc,js)
                   | otherwise = go (j:acc) js
 sccIndexM :: Node -> SccM Int
-sccIndexM i = gets ((IM.! i) . sccEnvIndex)
+sccIndexM i = N.gets ((IM.! i) . sccEnvIndex)
 sccLowLinkM :: Node -> SccM Int
-sccLowLinkM i = gets ((IM.! i) . sccEnvLowLink)
+sccLowLinkM i = N.gets ((IM.! i) . sccEnvLowLink)
 sccSetLowLinkToMin :: Node -> Int -> SccM ()
 sccSetLowLinkToMin i m = do
-  lowlink <- gets sccEnvLowLink
+  lowlink <- N.gets sccEnvLowLink
   let !new = IM.adjust (min m) i lowlink
-  modify(\e->e{sccEnvLowLink=new})
+  N.modify(\e->e{sccEnvLowLink=new})
 sccPushM :: Node -> SccM ()
 sccPushM i = do
-  m <- newUniqM
-  SCCEnv{..} <- get
+  m <- N.newUniqM
+  SCCEnv{..} <- N.get
   case () of
     _ | !index      <- m - 1
       , !sccEnvIndex   <- IM.insert i index sccEnvIndex
@@ -459,13 +519,13 @@ sccPushM i = do
       , !sccEnvStacked <- IM.insert i () sccEnvStacked
       , !sccEnvStack   <- i:sccEnvStack
       , !new        <- SCCEnv{..}
-      -> set new
+      -> N.set new
 sccSeenM :: Node -> SccM Bool
-sccSeenM i = gets (IM.member i . sccEnvIndex)
+sccSeenM i = N.gets (IM.member i . sccEnvIndex)
 sccSuccsM :: Node -> SccM NodeSet
-sccSuccsM i = gets ((IM.! i) . sccEnvGraph)
+sccSuccsM i = N.gets ((IM.! i) . sccEnvGraph)
 sccStackedM :: Node -> SccM Bool
-sccStackedM i = gets (IM.member i . sccEnvStacked)
+sccStackedM i = N.gets (IM.member i . sccEnvStacked)
 -- }}}
 
 -----------------------------------------------------------------------------
@@ -533,7 +593,7 @@ dfs rg@(r,g)
       (dfsEnvRoot,dfsEnvSpanning)
       (dfsEnvCallMap)
       (dfsEnvCompMap)
-type DfsM t a = SU2 (DfsEnv t) a
+type DfsM t a = SU2.S (DfsEnv t) a
 data DfsEnv a = DfsEnv
   {dfsEnvRoot :: !(Node) -- RO
   ,dfsEnvGraph :: Graph -- RO
@@ -563,7 +623,7 @@ dfsM v = do
               dfsSetCompM v
               return ()
 execDfsM :: DfsM t a -> DfsEnv t -> DfsEnv t
-execDfsM m env | (_,_,env) <- execSU2 m 1 1 env = env
+execDfsM m env | (_,(_,_,env)) <- N.runM m 1 1 env = env
 initDfsEnv :: (Node, Graph) -> DfsEnv a
 initDfsEnv (r,g) = DfsEnv
   {dfsEnvRoot = r
@@ -574,37 +634,37 @@ initDfsEnv (r,g) = DfsEnv
   ,dfsEnvCompMap = mempty}
 addTreeEdgesM :: Node -> NodeSet -> DfsM a ()
 addTreeEdgesM v ws = do
-  spant <- gets dfsEnvSpanning
-  modify(\e->e{dfsEnvSpanning
+  spant <- N.gets dfsEnvSpanning
+  N.modify(\e->e{dfsEnvSpanning
     =IM.insertWith IM.union v ws spant})
 dfsSeenM :: Node -> DfsM a Bool
-dfsSeenM v = gets ((v`IM.member`) . dfsEnvSeenNodes)
+dfsSeenM v = N.gets ((v`IM.member`) . dfsEnvSeenNodes)
 dfsSuccsM :: Node -> DfsM a (NodeSet)
-dfsSuccsM v = gets ((IM.! v) . dfsEnvGraph)
+dfsSuccsM v = N.gets ((IM.! v) . dfsEnvGraph)
 dfsUnSeenM :: NodeSet -> DfsM a (NodeSet)
-dfsUnSeenM s = gets
+dfsUnSeenM s = N.gets
   ((s `IM.difference`)
     . dfsEnvSeenNodes)
 dfsAddSeenM :: Node -> DfsM a ()
 dfsAddSeenM i = dfsUnionSeenM (IM.singleton i ())
 dfsUnionSeenM :: NodeSet -> DfsM a ()
 dfsUnionSeenM s = do
-  seen <- gets dfsEnvSeenNodes
-  modify(\e->e{dfsEnvSeenNodes=seen`IM.union`s})
+  seen <- N.gets dfsEnvSeenNodes
+  N.modify(\e->e{dfsEnvSeenNodes=seen`IM.union`s})
 dfsNextCallM :: DfsM a Int
-dfsNextCallM = newUniq1M
+dfsNextCallM = N.newUniq1M
 dfsNextCompM :: DfsM a Int
-dfsNextCompM = newUniq2M
+dfsNextCompM = N.newUniq2M
 dfsSetCallM :: Node -> DfsM a ()
 dfsSetCallM v = do
   dn <- dfsNextCallM
-  dnm <- gets dfsEnvCallMap
-  modify(\e->e{dfsEnvCallMap=IM.insert v dn dnm})
+  dnm <- N.gets dfsEnvCallMap
+  N.modify(\e->e{dfsEnvCallMap=IM.insert v dn dnm})
 dfsSetCompM :: Node -> DfsM a ()
 dfsSetCompM v = do
   cn <- dfsNextCompM
-  cnm <- gets dfsEnvCompMap
-  modify(\e->e{dfsEnvCompMap=IM.insert v cn cnm})
+  cnm <- N.gets dfsEnvCompMap
+  N.modify(\e->e{dfsEnvCompMap=IM.insert v cn cnm})
 -- }}}
 
 -----------------------------------------------------------------------------
@@ -626,22 +686,36 @@ data PartRefinePart = PRP
   ,prpClass  :: IntMap NodeSet}
   __D
 
-partRefineInit :: Partition -> DeltaInv -> PartRefine
-partRefineInit (n2i,i2ns) dinv
-  | IM.null n2i || IM.null i2ns || IM.null dinv
-  = PartRefine
-      {partRefinePart=PRP 0 mempty mempty mempty
-      ,partRefineDeltaInv=mempty}
-  | prpNext <- 1 + maxKey i2ns
-  , prpC2Size <- fmap IM.size i2ns
-  , prpN2C <- n2i
-  , prpClass <- i2ns
-  , partRefinePart <- PRP{..}
-  , partRefineDeltaInv <- dinv
-  = PartRefine{..}
-  where maxKey m
-          | Just ((k,_),_) <- IM.maxViewWithKey m = k
-          | otherwise = __IMPOSSIBLE
+class PartRefinePrep a where
+  partRefinePrep :: a -> (Partition, DeltaInv)
+instance PartRefinePrep (Partition, DeltaInv) where
+  partRefinePrep = id
+
+partRefineInit :: (PartRefinePrep a) => a -> PartRefine
+partRefineInit a
+  | (part, dinv) <- partRefinePrep a
+  = go part dinv
+  where go :: Partition -> DeltaInv -> PartRefine
+        go (n2i,i2ns) dinv
+          | IM.null n2i || IM.null i2ns || IM.null dinv
+          = PartRefine
+              {partRefinePart=PRP 0 mempty mempty mempty
+              ,partRefineDeltaInv=mempty}
+          | prpNext <- 1 + maxKey i2ns
+          , prpC2Size <- fmap IM.size i2ns
+          , prpN2C <- n2i
+          , prpClass <- i2ns
+          , partRefinePart <- PRP{..}
+          , partRefineDeltaInv <- dinv
+          = PartRefine{..}
+          where maxKey m
+                  | Just ((k,_),_) <- IM.maxViewWithKey m = k
+                  | otherwise = __IMPOSSIBLE
+
+partRefinePartition :: PartRefine -> Partition
+partRefinePartition PartRefine{..}
+  | PRP{..} <- partRefinePart
+  = (prpN2C, prpClass)
 
 -- | Hopcroft's Partition-Refinement Algorithm
 partRefineRefine :: PartRefine -> PartRefine
@@ -662,8 +736,9 @@ partRefineRefine PartRefine{..}
                 edgeLbls :: DeltaInv -> [EdgeLbl]
                 edgeLbls = IM.keys
                 deltaInv :: DeltaInv -> EdgeLbl -> NodeSet -> NodeSet
-                deltaInv dinv e ns = IM.fold (\/) mempty
-                  ((dinv IM.! e) `IM.intersection` ns)
+                deltaInv dinv e ns
+                  = IM.fold (\/) mempty
+                      ((IM.findWithDefault mempty e dinv) `IM.intersection` ns)
 
 type PartRefineStepState = (PartRefinePart, [NodeSet])
 partRefineStep :: PartRefineStepState -> NodeSet -> PartRefineStepState
@@ -683,8 +758,8 @@ partRefineStep s a = go s a
         refineOne s@(part@PRP{prpClass},ls) cls dinv
           | p <- prpClass IM.! cls
           , p1 <- p/\dinv
-          , p2 <- p\\dinv
-          , xdinv <- dinv\\p
+          , p2 <- p\\p1
+          , xdinv <- dinv\\p -- this is an optimization
           , o1 <- IM.null p1
           , o2 <- IM.null p2
           = case (o1,o2) of
@@ -694,22 +769,22 @@ partRefineStep s a = go s a
               (False,False)
                 | (part, p0) <- split part cls p1 p2
                 -> ((part, p0:ls), xdinv)
-        -- Splits the smaller of the two sets into a new class, and
-        -- returns the smaller one. It MUST be the case and is UNCHECKED
-        -- that the two sets are NONMEMPTY. And it MUST be the case and
-        -- is UNCHECKED that the two sets form a partition of the class
-        -- identified by the @Ix CLASS@.
         split
           :: PartRefinePart -> Int
           -> NodeSet -> NodeSet
           -> (PartRefinePart, NodeSet)
+        -- Splits the smaller of the two sets into a new class, and
+        -- returns the smaller one. It MUST be the case and is UNCHECKED
+        -- that the two sets are NONMEMPTY. And it MUST be the case and
+        -- is UNCHECKED that the two sets form a partition of the class
+        -- identified by the @Int@.
         split PRP{..} cls p1 p2
           | n1 <- IM.size p1 -- XXX: O(n)
           , n2 <- (prpC2Size IM.! cls) - n1
           , let go x1 x2 m1 m2
                   | !new <- prpNext
                   , !prpNext <- prpNext + 1
-                  , !prpN2C <- fmap (const new) x2`IM.intersection`prpN2C
+                  , !prpN2C <- fmap (const new) x2`IM.union`prpN2C
                   , !prpC2Size <- IM.insert cls m1 prpC2Size
                   , !prpC2Size <- IM.insert new m2 prpC2Size
                   , !prpClass <- IM.insert cls x1 prpClass
@@ -721,122 +796,200 @@ partRefineStep s a = go s a
 
 -----------------------------------------------------------------------------
 
-class (Monad m) => StateM m s | m -> s where
-  get :: m s
-  set :: s -> m ()
-  gets :: (s -> a) -> m a
-  modify :: (s -> s) -> m ()
-  gets f = do s <- get; let {!a = f s}; return a
-  modify f = do s <- get; let {!t = f s}; set t
-class (Monad m) => ReaderM m r where
-  ask :: m r
-  asks :: (r -> a) -> m a
-  asks f = do r <- ask; let {!a = f r}; return a
-class (Monad m) => WriterM m w where
-  tell :: w -> m ()
-class (Monad m) => ContM m where
-  callCC :: ((a -> m b) -> m a) -> m a
-class (Monad m) => UniqM m where
-  newUniqM :: m Int
-  getUniqM :: m Int
-  setUniqM :: Int -> m ()
-  swapUniqM :: Int -> m Int
-  newUniqM = do
-    i <- getUniqM
-    let !j = i + 1
-    setUniqM j
-    return i
-  swapUniqM i = do
-    j <- getUniqM
-    setUniqM i
-    return j
-class (Monad m) => Uniq2M m where
-  newUniq1M :: m Int
-  getUniq1M :: m Int
-  setUniq1M :: Int -> m ()
-  swapUniq1M :: Int -> m Int
-  newUniq2M :: m Int
-  getUniq2M :: m Int
-  setUniq2M :: Int -> m ()
-  swapUniq2M :: Int -> m Int
-  newUniq1M = do
-    i <- getUniq1M
-    let !j = i + 1
-    setUniq1M j
-    return i
-  swapUniq1M i = do
-    j <- getUniq1M
-    setUniq1M i
-    return j
-  newUniq2M = do
-    i <- getUniq2M
-    let !j = i + 1
-    setUniq2M j
-    return i
-  swapUniq2M i = do
-    j <- getUniq2M
-    setUniq2M i
-    return j
+#if 0
+class Linked a where
+  getMinks :: a -> [Node]
+  setMinks :: a -> [Node] -> a
+class (Ord k) => KeyOf a k where
+  keyOf :: a -> k
+class SuccsOf a where
+  succsOf :: a -> NodeSet
+#endif
 
-newtype SU s a = SU {unSU :: forall o. (a -> Int -> s -> o) -> Int -> s -> o}
-runSU :: SU s a -> Int -> s -> (a,(Int,s))
-runSU (SU g) (i) = g (\a i s-> (a,(i,s))) i
-evalSU :: SU s a -> Int -> s -> a
-evalSU (SU g) (i) = g (\a _ _-> a) i
-execSU :: SU s a -> Int -> s -> (Int,s)
-execSU (SU g) (i) = g (\_ i s-> (i,s)) i
-instance Functor (SU s) where
-  fmap f (SU g) = SU (\k -> g (k . f))
-instance Monad (SU s) where
-  return a = SU (\k -> k a)
-  SU g >>= f = SU (\k -> g (\a -> unSU (f a) k))
-instance Applicative (SU s) where
-  pure = return
-  (<*>) = ap
-instance StateM (SU s) s where
-  get = SU (\k i s-> k s i s)
-  gets f = SU (\k i s-> k (f s) i s)
-  set s = SU (\k i _-> k () i s)
-  modify f = SU (\k i s-> k () i (f s))
-instance UniqM (SU s) where
-  newUniqM = SU (\k i-> k (i) (i + 1))
-  getUniqM = SU (\k i-> k (i) i)
-  setUniqM (i) = SU (\k _ -> k () i)
-  swapUniqM (j) = SU (\k i-> k (i) j)
+data NodeKey k = UniqKey | NodeKey k __D
+class (Ord k) => NodeKeyed k a | a -> k where
+  nodeKey :: a -> NodeKey k
 
-newtype SU2 s a = SU2 {unSU2 :: forall o. (a -> Int -> Int -> s -> o) -> Int -> Int -> s -> o}
-runSU2 :: SU2 s a -> Int -> Int -> s -> (a,(Int,Int,s))
-evalSU2 :: SU2 s a -> Int -> Int -> s -> a
-execSU2 :: SU2 s a -> Int -> Int -> s -> (Int,Int,s)
-runSU2 (SU2 g) (i) (j) = g (\a i j s-> (a,(i,j,s))) i j
-evalSU2 (SU2 g) (i) (j) = g (\a _ _ _-> a) i j
-execSU2 (SU2 g) (i) (j) = g (\_ i j s-> (i,j,s)) i j
-instance Functor (SU2 s) where
-  fmap f (SU2 g) = SU2 (\k -> g (k . f))
-instance Monad (SU2 s) where
-  return a = SU2 (\k -> k a)
-  SU2 g >>= f = SU2 (\k -> g (\a -> unSU2 (f a) k))
-instance Applicative (SU2 s) where
-  pure = return
-  (<*>) = ap
-instance StateM (SU2 s) s where
-  get = SU2 (\k i j s-> k s i j s)
-  gets f = SU2 (\k i j s-> k (f s) i j s)
-  set s = SU2 (\k i j _-> k () i j s)
-  modify f = SU2 (\k i j s-> k () i j (f s))
-instance UniqM (SU2 s) where
-  newUniqM = newUniq1M
-  getUniqM = getUniq1M
-  setUniqM = setUniq1M
-  swapUniqM = swapUniq1M
-instance Uniq2M (SU2 s) where
-  newUniq1M = SU2 (\k i j-> k (i) (i + 1) j)
-  getUniq1M = SU2 (\k i j-> k (i) i j)
-  setUniq1M (i) = SU2 (\k _ j -> k () i j)
-  swapUniq1M (i') = SU2 (\k i j-> k (i) i' j)
-  newUniq2M = SU2 (\k i j-> k (j) i (j + 1))
-  getUniq2M = SU2 (\k i j-> k (j) i j)
-  setUniq2M (j) = SU2 (\k i _-> k () i j)
-  swapUniq2M (j') = SU2 (\k i j-> k (j) i j')
+-----------------------------------------------------------------------------
+
+-- | @partRefinePartition . partRefineRefine . partRefineInit@
+shareCyclic :: (Ord k) => NodeMap (k, [Node]) -> Partition
+shareCyclic dfa
+  | o <- partRefineInit dfa
+  , o <- partRefineRefine o
+  = partRefinePartition o
+
+-- | There is a lot of copy-paste duplication in the next threee instances:
+instance (Ord k) => PartRefinePrep (NodeMap (k, EdgeLblMap Node)) where
+  partRefinePrep dfa
+    | (dinv,kpart) <- IM.foldWithKey go mempty dfa
+    , part <- toPartition (M.elems kpart)
+    = (part, dinv)
+    where go i (key,js) (dinv,part)
+            | part <- M.insertWith (\/) key (IM.singleton i ()) part
+            , dinv <- updateDeltaInv i js dinv
+            = (dinv,part)
+          updateDeltaInv :: Node -> EdgeLblMap Node -> DeltaInv -> DeltaInv
+          updateDeltaInv i js dinv
+            = IM.foldWithKey go dinv js
+            where !iset = IM.singleton i ()
+                  go pos j dinv = IM.insertWith (\/)
+                    pos (IM.singleton j iset) dinv
+instance (Ord k) => PartRefinePrep (NodeMap (k, [Node])) where
+  partRefinePrep dfa
+    | (dinv,kpart) <- IM.foldWithKey go mempty dfa
+    , part <- toPartition (M.elems kpart)
+    = (part, dinv)
+    where go i (key,js) (dinv,part)
+            | part <- M.insertWith (\/) key (IM.singleton i ()) part
+            , dinv <- updateDeltaInv i js dinv
+            = (dinv,part)
+          updateDeltaInv :: Node -> [Node] -> DeltaInv -> DeltaInv
+          updateDeltaInv i js dinv
+            = IM.foldWithKey go dinv (IM.fromList . zip [0..] $ js)
+            where !iset = IM.singleton i ()
+                  go pos j dinv = IM.insertWith (\/)
+                    pos (IM.singleton j iset) dinv
+data MyNodeKey k = MyUniqKey !Int | MyNodeKey k deriving(Eq,Ord)
+instance (Ord k) => PartRefinePrep (NodeMap (NodeKey k, [Node])) where
+  partRefinePrep dfa
+    | (dinv,kpart) <- IM.foldWithKey go mempty dfa
+    , part <- toPartition (M.elems kpart)
+    = (part, dinv)
+    where go i (key,js) (dinv,part)
+            | newkey <- case key of
+                UniqKey-> MyUniqKey i
+                NodeKey k-> MyNodeKey k
+            , part <- M.insertWith (\/) newkey (IM.singleton i ()) part
+            , dinv <- updateDeltaInv i js dinv
+            = (dinv,part)
+          updateDeltaInv :: Node -> [Node] -> DeltaInv -> DeltaInv
+          updateDeltaInv i js dinv
+            = IM.foldWithKey go dinv (IM.fromList . zip [0..] $ js)
+            where !iset = IM.singleton i ()
+                  go pos j dinv = IM.insertWith (\/)
+                    pos (IM.singleton j iset) dinv
+
+-----------------------------------------------------------------------------
+
+flattenAcyclicToOneLevel :: Graph -> Either (IntMap NodeSet) (NodeMap NodeSet)
+flattenAcyclicToOneLevel g
+  | scc <- sccInit g
+  , topo <- sccTopoAssertAcyclic scc
+  = case topo of
+      Left comps
+        | let go c _ = sccGetCompNodes scc c
+        -> Left (IM.mapWithKey go comps)
+      Right ns
+        | tclos <- foldl' step g ns
+        -> Right tclos
+  where step acc i
+          | js <- g IM.! i
+          , ks <- IM.foldWithKey (\j _ o-> o \/ (acc IM.! j)) js js
+          = IM.insert i ks acc
+
+shareOneLevel :: (Ord k) => NodeMap (k, [Node]) -> Partition
+shareOneLevel = toPartition . fst . flip shareOneLevelWith mempty
+
+shareAcyclic :: (Ord k) => NodeMap (k, [Node]) -> Partition
+shareAcyclic = toPartition . fst . flip shareAcyclicWith mempty
+
+shareOneLevelWith :: (Ord k) => NodeMap (k, [Node]) -> MemoTrie k -> (NodeMap Node, MemoTrie k)
+shareOneLevelWith g memo = IM.foldWithKey go (mempty,memo) g
+  where go i (k,js) (rn,memo)
+          | Just trie <- M.lookup k memo
+          = case lookupIT js trie of
+              Just new-> rnTo i new rn memo
+              Nothing-> add i k js rn memo trie
+          | otherwise = add i k js rn memo mempty
+        add old k js rn memo trie
+          | !trie <- insertIT js old trie
+          , !memo <- M.insert k trie memo
+          , !rn   <- IM.insert old old rn
+          = (rn,memo)
+        rnTo old new rn memo
+          | !rn <- IM.insert old new rn
+          = (rn,memo)
+
+shareAcyclicWith :: (Ord k) => NodeMap (k, [Node]) -> MemoTrie k -> (NodeMap Node, MemoTrie k)
+shareAcyclicWith dfa memo
+  | ns <- topo dfa
+  , (rn,memo) <- foldl' go (mempty,memo) ns
+  = (rn,memo)
+  where topo dfa
+          | g <- fmap (fromList . flip zip (repeat ()) . snd) $ dfa
+          , nss <- sccTopo . sccInit . legalize $ g
+          = concatMap (IM.keys . (`IM.intersection` dfa)) nss
+        go (rn,memo) i
+          | (k,js) <- dfa IM.! i
+          , js <- rename rn js
+          = case () of
+              _ | Just trie <- M.lookup k memo
+                -> case lookupIT js trie of
+                    Just new-> rnTo i new rn memo
+                    Nothing-> add i k js rn memo trie
+                | otherwise-> add i k js rn memo mempty
+        rename rn js = fmap go js
+          where go j = maybe j id (IM.lookup j rn)
+        add old k js rn memo trie
+          | !trie <- insertIT js old trie
+          , !memo <- M.insert k trie memo
+          , !rn   <- IM.insert old old rn
+          = (rn,memo)
+        rnTo old new rn memo
+          | !rn <- IM.insert old new rn
+          = (rn,memo)
+type MemoTrie k = Map k (IntTrie Node)
+data IntTrie b = Trie
+  !(Maybe b)
+  !(IntMap (IntTrie b))
+  deriving(Eq,Ord,Read,Show)
+instance Functor IntTrie where
+  fmap f (Trie a m) = Trie (fmap f a)
+                           ((fmap . fmap) f m)
+instance Monoid (IntTrie b) where
+  mempty = Trie Nothing IM.empty
+  mappend _ _ = __IMPOSSIBLE("mappend<IntTrie<_>>")
+nullIT :: IntTrie b -> Bool
+nullIT (Trie Nothing m) = IM.null m
+nullIT _ = False
+fromListIT :: [([Int], b)] -> IntTrie b
+fromListIT = foldl' ((flip . uncurry) insertIT) mempty
+toListIT :: IntTrie b -> [([Int], b)]
+toListIT trie = maybe [] (\a->[([],a)]) a ++ (go [] =<< ts)
+  where (a, ts) = toTreeIT trie
+        go acc (Node (a,c) ts)
+          = maybe (go (c:acc) =<< ts)
+                  (\a -> (reverse (c:acc),a)
+                          : (go (c:acc) =<< ts)) a
+elemsIT :: IntTrie b -> [b]
+elemsIT (Trie Nothing m) = elemsIT =<< IM.elems m
+elemsIT (Trie (Just b) m) = b : (elemsIT =<< IM.elems m)
+toTreeIT :: IntTrie b -> (Maybe b, [Tree (Maybe b,Int)])
+toTreeIT (Trie a m) = (a, go m)
+  where reassoc (k, Trie a m) = Node (a,k) (go m)
+        go = fmap reassoc . IM.toList
+insertIT :: [Int] -> b -> IntTrie b -> IntTrie b
+insertIT [] a (Trie _ m) = Trie (Just a) m
+insertIT (k:ks) a (Trie x m)
+  | t <- maybe mempty id (IM.lookup k m)
+  , t <- insertIT ks a t
+  , m <- IM.insert k t m
+  = Trie x m
+insertWithIT :: (b -> b -> b) -> [Int] -> b -> IntTrie b -> IntTrie b
+insertWithIT f = go
+  where go [] new (Trie Nothing m)
+          = Trie (Just new) m
+        go [] new (Trie (Just old) m)
+          | new <- f new old
+          = Trie (Just new) m
+        go (k:ks) new (Trie x m)
+          | t <- maybe mempty id (IM.lookup k m)
+          , t <- go ks new t
+          , m <- IM.insert k t m
+          = Trie x m
+lookupIT :: [Int] -> IntTrie b -> Maybe b
+lookupIT [] (Trie a _) = a
+lookupIT (k:ks) (Trie _ m) = lookupIT ks =<< IM.lookup k m
 
 -----------------------------------------------------------------------------

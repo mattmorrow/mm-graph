@@ -19,7 +19,8 @@ source-repository head
   location: https://github.com/mattmorrow/mm-graph
 library
   build-depends:      base >= 4 && < 5,
-                      mm-containers
+                      mm-containers,
+                      mm-control
 
   ghc-options:        -O2 -funbox-strict-fields
   ghc-prof-options:
@@ -43,9 +44,10 @@ library
                       StandaloneDeriving,
                       ScopedTypeVariables,
                       UndecidableInstances,
-                      RankNTypes
+                      IncoherentInstances
 
   other-modules:
   exposed-modules:
                       MM.Data.Graph.Int
+                      MM.Data.Graph.Ix
 
