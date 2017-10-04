@@ -794,16 +794,6 @@ partRefineStep s a = go s a
 
 -----------------------------------------------------------------------------
 
-#if 0
-class Linked a where
-  getMinks :: a -> [Node]
-  setMinks :: a -> [Node] -> a
-class (Ord k) => KeyOf a k where
-  keyOf :: a -> k
-class SuccsOf a where
-  succsOf :: a -> NodeSet
-#endif
-
 data NodeKey k = UniqKey | NodeKey k __D
 class (Ord k) => NodeKeyed k a | a -> k where
   nodeKey :: a -> NodeKey k

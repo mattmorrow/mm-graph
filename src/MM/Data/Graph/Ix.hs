@@ -1,80 +1,143 @@
 {-# OPTIONS -pgmP cpp -optP-w #-}
-{-# LANGUAGE CPP #-}
+{-# LANGUAGE
+      CPP,
+      MagicHash,
+      BangPatterns,
+      OverlappingInstances,
+      UndecidableInstances,
+      IncoherentInstances #-}
 #define __D deriving(Eq,Ord,Read,Show)
 #define __D_BE deriving(Eq,Ord,Read,Show,Bounded,Enum)
+#ifdef __DEBUG_ON
+#define __IF_DEBUG(on,off) on
+#else
+#define __IF_DEBUG(on,off) off
+#endif
+#define __DEBUG(o)  __IF_DEBUG(o,)
+#define __PANIC(what,note)\
+  (error(concat[__FILE__,":",show(__LINE__),":[",(what),"]:",(note)]))
+#define __BUG(note)     __PANIC("BUG",note)
+#define __FIXME(note)   __PANIC("FIXME",note)
+#define __IMPOSSIBLE    __BUG("impossible")
+#define __ASSERT(cond)  __IF_DEBUG(__ASSERT_DO(cond),True)
+#define __ASSERT_FAIL(note) __PANIC("ASSERT",note)
+#define __ASSERT_DO(cond)\
+  (if (cond) then True else (__ASSERT_FAIL(#cond)))
+#define HASH #
+#define __INLINE(x) {-HASH INLINE x HASH-}
 
 module MM.Data.Graph.Ix (
-) where
+   Graph,PredGraph,Node,NodeMap,NodeSet
+  ,Partition,Cover,IsPartition(..)
 
+  ,isLegal,legalize,nodes
+  ,invert,predGraph,succGraph,invertForest
+  ,fromAdj,toAdj
+  ,quotientGraph,inducedSubgraph,inducedSubgraphs
 
-#if 0
-   IxSet_,Partition,Cover,Graph,Graph_(..)
-
-  ,idom_SimpleFast_TEST,idom_SimpleFast
-  ,fromAdj,g0,g1
-
-  ,isLegal,legalize,nodes,invert
-  ,inducedSubgraph,quotientGraph
-  ,CCs(..),CC(..),ccInit
-  ,SCCs(..),SCC(..),sccInit
-  ,DFN,DFSEdge(..),dfnInit,dfnClassifyEdge,dfnN2Pre,dfnN2Post,dfnPre2N,dfnPost2N,dfnPre,dfnPost,dfnPreOrder,dfnPostOrder,dfnRevPreOrder,dfnRevPostOrder
-  ,NCA,ncaInit,nca
-  ,DomTree,domTreeInit,domTreeIDom
+  ,DomTree(..),domTreeInit,domTreeRevPostOrder
   ,DomFront,domFrontInit,domFront
   ,DomFrontPlus,domFrontPlusInit,domFrontPlus
-  ,PartRefine,partRefineInit,partRefine
+
+  ,SCC,SCCData,Cyclicity(..)
+  ,sccInit
+  ,sccTopo,sccTopoAssertAcyclic
+  ,sccGetCompNodes,sccGetNodeComp
+  ,sccAcyclicComps,sccCyclicComps,sccCompsWithCyclicity
+  ,sccAcyclicNodes,sccCyclicNodes,sccNodesWithCyclicity
+
+  ,DFN,DFNEdge(..)
+  ,dfnInit
+  ,dfnClassifyEdge
+  ,dfnN2Pre,dfnN2Post,dfnPre2N,dfnPost2N
+  ,dfnPre,dfnPost
+  ,dfnPreOrder,dfnPostOrder,dfnRevPreOrder,dfnRevPostOrder
+
+  ,PartRefine,EdgeLbl,EdgeLblMap,DeltaInv
+  ,PartRefinePrep(..)
+  ,partRefineInit -- :: Partition -> DeltaInv -> PartRefine
+  ,partRefinePartition
+  ,partRefineDeltaInv
+  ,partRefineRefine -- :: PartRefine -> PartRefine
+
+  ,NodeKeyed(..),NodeKey(..)
+
+  ,shareOneLevel
+  ,shareAcyclic
+  ,shareCyclic
+  ,flattenAcyclicToOneLevel
 ) where
 
-IMPORT_MM_DATA_IX
-IMPORT_MM_DATA_INTMAPSET
-IMPORT_MM_DATA_UF
-IMPORT_MM_DATA_UTIL
-IMPORT_MM_DATA_CLASSES
-IMPORT_MM_DATA_EXTERNAL
-import qualified MM.Data.Ix.Types as Ix(castIx,castIxArg,castIxArg2)
-import qualified MM.Control.Monad.S.U2 as U2
-import Unsafe.Coerce(unsafeCoerce)
-import System.IO.Unsafe
+import Prelude hiding(null)
+import qualified Prelude as P
+import Data.Int
+import Data.Word
+import Data.Bits
+import MM.Data.Map.Ord(Map)
+import MM.Data.Set.Ord(Set)
+import MM.Data.Map.Int(IntMap)
+import MM.Data.Set.Int(IntSet)
+import qualified MM.Data.Map.Ord as M
+import qualified MM.Data.Set.Ord as S
+import qualified MM.Data.Map.Int as IM
+import qualified MM.Data.Set.Int as IS
+import Data.Monoid(Monoid(..))
+import Control.Applicative(Applicative(..))
+import Control.Monad
+import Data.Function
+import Data.List(foldl')
+import MM.Data.Tree.Rose(Tree(..))
+import qualified MM.Control.Monad.S.U as SU
+import qualified MM.Control.Monad.S.U2 as SU2
+import qualified MM.Control.Monad.Class as N
+import MM.Data.Class.Base
+import MM.Data.Types.Ix
+import MM.Data.Map.Ix(IxMap)
+import MM.Data.Set.Ix(IxSet)
+import MM.Data.Trie.Ix(IxTrie)
+import qualified MM.Data.Map.Ix as Ix
+import qualified MM.Data.Set.Ix as IxS
+import qualified MM.Data.Trie.Ix as IxT
 
 -----------------------------------------------------------------------------
 
-type Graph a = IxMap a (IxSet_ a)
-type Tree a = Graph a
-type Partition a b = (IxMap a (Ix b), IxMap b (IxSet_ a))
-type Cover a b = (IxMap a (IxSet_ a), IxMap b (IxSet_ a))
+-- | .
+type Node a = Ix a
+type NodeMap a b = IxMap a b
+type NodeSet a = NodeMap a ()
+type Graph a = NodeMap a (NodeSet a)
+type PredGraph a = Graph a
 
-data Graph_ a = Graph
-  {
-   graphSuccs :: IxMap a (IxSet_ a)
-  ,graphPreds :: IxMap a (IxSet_ a)
-  } __D
+data Components a b x = Comps
+  {compsPart :: Partition a b
+  ,compsData :: x}
+  __D
 
--- | XXX:FIXME:not here
-type IxSet_ a = IxMap a ()
+type Partition a b  = (NodeMap a (Node b), NodeMap b (NodeSet a))
+type Cover a b = (NodeMap a (NodeSet b), NodeMap b (NodeSet a))
 
-#if 1
-g0 = fromAdj
-  [(1,[2,3])
-  ,(2,[3])
-  ,(3,[4])
-  ,(4,[3,5,6])
-  ,(5,[7])
-  ,(6,[7])
-  ,(7,[4,8])
-  ,(8,[3,9,10])
-  ,(9,[1])
-  ,(10,[7])]
-
-g1 = fromAdj
-  [(0,[1])
-  ,(1,[2,3])
-  ,(2,[7])
-  ,(3,[4])
-  ,(4,[5,6])
-  ,(5,[7])
-  ,(6,[4])
-  ,(7,[])]
-#endif
+class IsPartition a b x where
+  toPartition :: x -> Partition a b
+  fromPartition :: Partition a b -> x
+instance IsPartition a b (NodeMap a (Node b)) where
+  fromPartition = fst
+  toPartition n2i
+    | i2ns <- Ix.foldWithKey go mempty n2i
+    = (n2i, i2ns)
+    where go n i o = Ix.insertWith (\/) i (Ix.singleton n ()) o
+instance IsPartition a b (NodeMap b (NodeSet a)) where
+  fromPartition = snd
+  toPartition i2ns
+    | n2i <- Ix.foldWithKey go mempty i2ns
+    = (n2i, i2ns)
+    where go i ns o = Ix.foldWithKey (\n _ o-> Ix.insert n i o) o ns
+instance IsPartition a b [NodeSet a] where
+  fromPartition p
+    | i2ns <- fromPartition p :: NodeMap b (NodeSet a)
+    = Ix.elems i2ns
+  toPartition xs
+    | i2ns <- Ix.fromList (zip [0..] xs) :: NodeMap b (NodeSet a)
+    = toPartition i2ns
 
 -----------------------------------------------------------------------------
 
@@ -86,33 +149,55 @@ isLegal g = Ix.size (g `Ix.difference` nodes g) == 0
 legalize :: Graph a -> Graph a
 legalize g = g \/ fmap (const mempty) (nodes g)
 
-nodes :: Graph a -> IxMap a ()
+nodes :: Graph a -> NodeSet a
 nodes g = Ix.foldWithKey go mempty g
   where go i is acc = Ix.insert i () (acc \/ is)
 
-invert :: forall a. Graph a -> Graph a
+-----------------------------------------------------------------------------
+
+invert :: Graph a -> Graph a
 invert g = Ix.foldWithKey go (fmap (const mempty) g) g
-  where go :: Ix a -> IxSet_ a -> Graph a -> Graph a
+  where go :: Node a -> NodeSet a -> Graph a -> Graph a
         go i js acc
           | !is <- Ix.singleton i ()
+          , !acc <- Ix.insertWith (\/) i mempty acc
           = Ix.foldWithKey (\j _ acc-> Ix.insertWith (\/) j is acc) acc js
 
-fromAdj :: [(Ix a, [Ix a])] -> Graph a
-fromAdj = fmap (\is-> fromList (zip is (repeat ()))) . fromList
+predGraph :: Graph a -> PredGraph a
+succGraph :: PredGraph a -> Graph a
+predGraph = invert
+succGraph = invert
+
+invertForest :: NodeMap a (Node a) -> Graph a
+invertForest = Ix.foldWithKey go mempty
+  where go i j o = Ix.insertWith (\/) j (Ix.singleton i ()) o
 
 -----------------------------------------------------------------------------
 
-inducedSubgraph :: Graph a -> IxSet_ a -> Graph a
+fromAdj :: [(Node a, [Node a])] -> Graph a
+fromAdj = fmap (\is-> Ix.fromList (zip is (repeat ()))) . Ix.fromList
+
+toAdj :: Graph a -> [(Node a, [Node a])]
+toAdj = Ix.toList . fmap Ix.keys
+
+-----------------------------------------------------------------------------
+
+quotientGraph :: Graph a -> Partition a b -> Graph a
+quotientGraph g _ = __FIXME("quotientGraph")
+
+inducedSubgraph :: Graph a -> NodeSet a -> Graph a
 inducedSubgraph g ns = Ix.foldWithKey (\i is acc->
     let !js = is`Ix.intersection`ns
     in Ix.insert i js acc
   ) mempty (g`Ix.intersection`ns)
 
-quotientGraph :: Graph a -> Partition a b -> Graph b
-quotientGraph g _ = undefined
+inducedSubgraphs :: Graph a -> Partition a b -> IxMap b (Graph a)
+inducedSubgraphs g = fmap (inducedSubgraph g) . fromPartition
 
 -----------------------------------------------------------------------------
+-----------------------------------------------------------------------------
 
+#if 0
 data NCA a = NCA
   {ncaDFN :: DFN a
   ,ncaRoot :: !(Ix a)
@@ -120,10 +205,8 @@ data NCA a = NCA
   ,ncaDFNPostLo :: IxMap a Int
   ,ncaDFNPostHi :: IxMap a Int
   } __D
-
 ncaInit :: Tree a -> Ix a -> NCA a
 ncaInit g root = undefined
-
 -- |
 -- > nca(i,j)
 -- > {
@@ -151,80 +234,93 @@ ncaInit g root = undefined
 -- > }
 nca :: NCA a -> Ix a -> Ix a -> (Ix a, NCA a)
 nca NCA{..} i j = undefined
+#endif
 
 -----------------------------------------------------------------------------
 
 data DomTree a = DomTree
-  {domTreeRoot :: !(Ix a)
-  ,domTreeParent :: IxMap a (Ix a)
-  ,domTreeChildren :: IxMap a (IxSet_ a)}
-  __D
-newtype DomFront a = DomFront
-  {domFrontDF :: IxMap a (IxSet_ a)}
-  __D
-data DomFrontPlus a = DomFrontPlus
-  {domFrontPlusDF :: DomFront a
-  ,domFrontPlusDFPlus :: IxMap a (IxSet_ a)}
-  __D
+  {domTreeDFN :: DFN a
+  ,domTreeRoot :: !(Node a)
+  ,domTreeParent :: NodeMap a (Node a)
+  ,domTreeChildren :: Graph a
+  } __D
 
-domTreeInit :: Graph a -> Ix a -> DomTree a
-domTreeInit g root = undefined
-domTreeIDom :: DomTree a -> Ix a -> Ix a
-domTreeIDom DomTree{domTreeParent} i = domTreeParent Ix.! i
+domTreeInit :: PredGraph a -> DFN a -> Node a -> DomTree a
+domTreeInit preds dfn root
+  | domTreeRoot <- root
+  , domTreeParent <- idomInit preds dfn root
+  , domTreeChildren <- legalize (invertForest domTreeParent)
+  , domTreeDFN <- dfnInit domTreeChildren domTreeRoot
+  = DomTree{..}
 
-idom_SimpleFast_TEST :: Graph a -> Ix a -> IxMap a (Ix a)
-idom_SimpleFast_TEST g root
-  | dfn <- dfnInit g root
-  , dfnpost <- dfnN2Post dfn
+domTreeRevPostOrder :: DomTree a -> [Node a]
+domTreeRevPostOrder DomTree{domTreeDFN=o} = dfnRevPostOrder o
+
+idomInit_ :: Graph a -> Node a -> NodeMap a (Node a)
+idomInit_ succs root
+  | dfn <- dfnInit succs root
+  , preds <- invert succs
+  = idomInit preds dfn root
+
+-- | The "Simple Fast" immediate dominators algorithm.
+idomInit :: forall a. PredGraph a -> DFN a -> Node a -> NodeMap a (Node a)
+idomInit preds dfn root
+  | dfnpost <- dfnN2Post dfn
   , dfnpostinv <- dfnPost2N dfn
-  , preds <- invert g
-  = idom_SimpleFast dfnpost dfnpostinv preds root
-idom_SimpleFast
-  :: forall a.
-     IxMap a Int    -- PostDfn
-  -> IntMap (Ix a)  -- PostDfnInv
-  -> Graph a        -- PREDECESSORS
-  -> Ix a
-  -> IxMap a (Ix a) -- idom
-idom_SimpleFast dfn dfninv preds root = while (Ix.singleton root root)
-  where rpo = drop 1 (reverse (IM.elems dfninv))
-        while :: IxMap a (Ix a) -> IxMap a (Ix a)
-        while idom
-          | (changed,idom) <- foldl' go (False,idom) rpo
-          = if changed then while idom else idom
-        go :: (Bool, IxMap a (Ix a)) -> Ix a -> (Bool, IxMap a (Ix a))
-        go acc@(changed,idom) i
-          | ps <- (preds Ix.! i)`Ix.intersection`idom
-          , not (Ix.null ps)
-          , j <- Ix.minKeyWithDefault 0 ps
-          , js <- Ix.delete j ps
-          , let loop k _ newidom = intersect dfn idom k newidom
-          , newidom <- Ix.foldWithKey loop j js
-          , case Ix.lookup i idom of
-              Just x-> x/=newidom
-              Nothing-> True
-          , !idom <- Ix.insert i newidom idom
-          = (True,idom)
-          | otherwise = acc
-        intersect
-          :: forall a.
-             IxMap a Int -- PostDfn
-          -> IxMap a (Ix a) -- parent
-          -> Ix a -> Ix a -> Ix a
-        intersect dfn parent i j = go i j
-          where go :: Ix a -> Ix a -> Ix a
-                go i j
-                  | i==j = i
-                  | i <- walk i j
-                  , j <- walk j i
-                  = go i j
-                walk :: Ix a -> Ix a -> Ix a
-                walk i j = loop (dfn Ix.! j) i
-                  where loop !nj !i
-                          | ni <- dfn Ix.! i
-                          , ni < nj
-                          = loop nj (parent Ix.! i)
-                          | otherwise = i
+  = idom dfnpost dfnpostinv preds root
+  where idom
+          :: NodeMap a Int      -- PostDfn
+          -> IntMap (Node a)    -- PostDfnInv
+          -> PredGraph a        -- PREDECESSORS
+          -> Node a             -- root
+          -> NodeMap a (Node a) -- idom
+        idom dfn dfninv preds root = while (Ix.singleton root root)
+          where rpo = drop 1 (reverse (IM.elems dfninv))
+                while :: NodeMap a (Node a) -> NodeMap a (Node a)
+                while idom
+                  | (changed,idom) <- foldl' go (False,idom) rpo
+                  = if changed then while idom else idom
+                go :: (Bool, NodeMap a (Node a)) -> Node a -> (Bool, NodeMap a (Node a))
+                go acc@(changed,idom) i
+                  | ps <- (preds Ix.! i)`Ix.intersection`idom
+                  , not (Ix.null ps)
+                  , j <- minKeyWithDefault 0 ps
+                  , js <- Ix.delete j ps
+                  , let loop k _ newidom = intersect dfn idom k newidom
+                  , newidom <- Ix.foldWithKey loop j js
+                  , case Ix.lookup i idom of
+                      Just x-> x/=newidom
+                      Nothing-> True
+                  , !idom <- Ix.insert i newidom idom
+                  = (True,idom)
+                  | otherwise = acc
+                minKeyWithDefault dflt m
+                  | Just ((k,_),_) <- Ix.minViewWithKey m = k
+                  | otherwise = dflt
+                intersect
+                  :: NodeMap a Int      -- PostDfn
+                  -> NodeMap a (Node a) -- parent
+                  -> Node a -> Node a -> Node a
+                intersect dfn parent i j = go i j
+                  where go :: Node a -> Node a -> Node a
+                        go i j
+                          | i==j = i
+                          | i <- walk i j
+                          , j <- walk j i
+                          = go i j
+                        walk :: Node a -> Node a -> Node a
+                        walk i j = loop (dfn Ix.! j) i
+                          where loop !nj !i
+                                  | ni <- dfn Ix.! i
+                                  , ni < nj
+                                  = loop nj (parent Ix.! i)
+                                  | otherwise = i
+
+-----------------------------------------------------------------------------
+
+data DomFront a = DomFront
+  {domFrontDF :: NodeMap a (NodeSet a)}
+  __D
 
 -- |
 -- > domFrontInit()
@@ -243,157 +339,268 @@ idom_SimpleFast dfn dfninv preds root = while (Ix.singleton root root)
 -- >   }
 -- >   return df
 -- > }
-domFrontInit :: DomTree a -> DomFront a
-domFrontInit dt = undefined
-domFront :: DomFront a -> Ix a -> IxSet_ a
-domFront df i = undefined
+domFrontInit :: DomTree a -> Graph a -> DomFront a
+domFrontInit DomTree{..} g
+  | todo <- dfnRevPreOrder domTreeDFN
+  , domFrontDF <- foldl' loop (fmap (const mempty) g) todo
+  = DomFront{..}
+  where loop o x = up x (local x o)
+        local x o = Ix.foldWithKey go o (g Ix.! x)
+          where go y _ o
+                  | x /= domTreeParent Ix.! y
+                  , new <- Ix.insert y () (o Ix.! x)
+                  = Ix.insert x new o
+                  | otherwise = o
+        up x o = Ix.foldWithKey fold o (domTreeChildren Ix.! x)
+          where fold z _ o = Ix.foldWithKey go o (o Ix.! z)
+                  where go y _ o
+                          | x /= domTreeParent Ix.! y
+                          , new <- Ix.insert y () (o Ix.! x)
+                          = Ix.insert x new o
+                          | otherwise = o
 
+domFront :: DomFront a -> Node a -> NodeSet a
+domFront DomFront{..} i = Ix.findWithDefault mempty i domFrontDF
+
+-----------------------------------------------------------------------------
+
+data DomFrontPlus a = DomFrontPlus
+  {domFrontPlusDF :: DomFront a
+  ,domFrontPlusDFPlus :: NodeMap a (NodeSet a)}
+  __D
+
+-- |
+-- > ghci> let g = fromAdj [(1,[2]),(2,[3,4]),(3,[5]),(4,[5,6]),(5,[6,2]),(6,[])]
+-- > ghci> isLegal g == (g == legalize g)
+-- > True
+-- > ghci> let domtree = domTreeInit (predGraph g) (dfnInit g 1) 1
+-- > ghci> let df = domFrontInit domtree g
+-- > ghci> let dfplus n DomFront{..} | domFrontDF <- loop n domFrontDF = DomFront{..} where {loop n df | n <= 1 = df | df <- Ix.foldWithKey go df df = loop (n - 1) df where {go x ys df | zs <- Ix.foldWithKey (\y _ o-> o \/ (df Ix.! y)) ys ys = Ix.insert x zs df}}
+-- > ghci> mapM_ print $ fmap (\x-> (unIx x, fmap unIx $ Ix.keys $ domFront (dfplus 1df) x)) [1..6]
+-- > (1,[])
+-- > (2,[2])
+-- > (3,[5])
+-- > (4,[5,6])
+-- > (5,[2,6])
+-- > (6,[])
+-- > ghci> mapM_ print $ fmap (\x-> (unIx x, fmap unIx $ Ix.keys $ domFront (dfplus 2 df) x)) [1..6]
+-- > (1,[])
+-- > (2,[2])
+-- > (3,[2,5,6])
+-- > (4,[2,5,6])
+-- > (5,[2,6])
+-- > (6,[])
+-- > ghci> mapM_ print $ fmap (\x-> (unIx x, fmap unIx $ Ix.keys $ domFront (dfplus 3 df) x)) [1..6]
+-- > (1,[])
+-- > (2,[2])
+-- > (3,[2,5,6])
+-- > (4,[2,5,6])
+-- > (5,[2,6])
+-- > (6,[])
+--
 domFrontPlusInit :: DomFront a -> DomFrontPlus a
-domFrontPlusInit df = undefined
-domFrontPlus :: DomFrontPlus a -> Ix a -> (IxSet_ a, DomFrontPlus a)
-domFrontPlus dfp i = undefined
+domFrontPlusInit df = __FIXME("domFrontPlusInit")
 
-#if 0
-NOTE:
-Nodes a and b have the same control depencies iff a and b are cycle
-equivalent in the strongly connected component formed by adding end->start
-to the CFG.
-#endif
+domFrontPlus :: DomFrontPlus a -> Node a -> (NodeSet a, DomFrontPlus a)
+domFrontPlus dfp i = __FIXME("domFrontPlus")
 
 -----------------------------------------------------------------------------
 
-data PartRefine a = PartRefine
-  {
-  } __D
-
-partRefineInit :: ()
-partRefineInit = undefined
-
-partRefine :: PartRefine a -> PartRefine a
-partRefine p = undefined
-
------------------------------------------------------------------------------
-
--- | Connected Components
-data CCs a = CCs
-  {ccsPartition :: Partition a (CC a)
-  ,ccsComponents :: IxMap (CC a) (CC a)}
-  __D
-newtype CC a = CC
-  {ccGraph :: Graph a
-  } __D
-
--- XXX:figure out the Ix casts so no have to unsafeCoerce.
-ccInit :: Graph a -> CCs a
-ccInit g
-  | uf <- singletons g
-  , (# _,uf #) <- foldl2 go mempty uf (Ix.keys g)
-  , (i2x, x2g) <- UF.quotient' uf
-  , x2is <- (fmap . fmap) (const ()) x2g
-  , ccsPartition <- unsafeCoerce (i2x, x2is)
-  , ccsComponents <- unsafeCoerce (fmap CC x2g) --ugh,the fmap
-  = CCs{..}
-  where go seen uf i
-          | i`Ix.member`seen
-          = (# seen,uf #)
-          | ss <- Ix.keys (g Ix.! i)
-          , !seen <- Ix.insert i () seen
-          , !uf <- foldl' (\uf j-> UF.unionWith_ Ix.union uf i j) uf ss
-          = foldl2 go seen uf ss
-        singletons :: Graph a -> UF a (Graph a)
-        singletons = flip Ix.foldWithKey mempty
-          (\i is acc-> UF.unsafeInsert acc i (Ix.singleton i is))
-
------------------------------------------------------------------------------
-
--- | Strongly Connected Components
-data SCCs a = SCCs
-  {sccsPartition :: Partition a (SCC a)
-  ,sccsComponents :: IxMap (SCC a) (SCC a)}
-  __D
-newtype SCC a = SCC
-  {sccCyclicity :: Cyclicity
-  } __D
+type SCC a b = Components a b (SCCData b)
+data SCCData b = SCCData
+  {sccDataTo :: NodeMap b Cyclicity
+  ,sccDataFrom :: Map Cyclicity (NodeSet b)} __D
 data Cyclicity = Acyclic | Cyclic __D_BE
+instance Empty (SCCData b) where
+  empty = SCCData empty empty
+  isEmpty o = o==empty
+instance Monoid (SCCData b) where
+  mempty = SCCData mempty mempty
+  mappend (SCCData a1 b1) (SCCData a2 b2)
+    | !a <- mappend a1 a2
+    , !b <- mappend b1 b2
+    = SCCData a b
 
-sccInit :: Graph a -> SCCs a
-sccInit g = undefined
+sccInit :: forall a b. Graph a -> SCC a b
+sccInit g
+  | sccs <- sccEnvSCCs (execSccM sccTarjanM (initSCCEnv g))
+  , comps <- Ix.fromList . zip [0..] . reverse $ sccs
+  , compsPart <- toPartition comps
+  , compsData <- Ix.foldWithKey go mempty comps
+  = Comps{..}
+  where go :: Node b -> NodeSet a -> SCCData b -> SCCData b
+        go comp ns SCCData{..}
+          | cyc <- cyclicity ns
+          , sccDataTo <- Ix.insert comp cyc sccDataTo
+          , sccDataFrom <- M.insertWith (\/) cyc
+              (Ix.singleton comp ()) sccDataFrom
+          = SCCData{..}
+        cyclicity :: NodeSet a -> Cyclicity
+        cyclicity ns
+          | Just ((n,_),rest) <- Ix.minViewWithKey ns
+          = case Ix.null rest of
+              False-> Cyclic
+              True
+                | n`Ix.member`(Ix.findWithDefault mempty n g)-> Cyclic
+                | otherwise-> Acyclic
+          | otherwise = __IMPOSSIBLE
 
----- Data.Graph.SCC's interface
---scc :: Graph -> ([(Int, [Vertex])], Vertex -> Int)
---sccList :: Graph -> [SCC Vertex]
---sccListR :: Graph -> [SCC (Vertex, [Vertex])]
---sccGraph :: Graph -> [(SCC Int, Int, [Int])]
---stronglyConnComp :: Ord key => [(node, key, [key])] -> [SCC node]
---stronglyConnCompR :: Ord key => [(node, key, [key])] -> [SCC (node, key, [key])]
+sccGetCompNodes :: SCC a b -> Node b -> NodeSet a
+sccGetCompNodes Comps{compsPart=(_,c2ns)} comp = c2ns Ix.! comp
 
-#if 0
-data SccOps0 = SccOps0
-  {sccMap_0   :: Graph a -> IxMap a Int
-  ,sccMaps_0  :: Graph a -> (IxMap a Int, IntMap (IxSet_ a))
-  --
-  ,iscc_0     :: Graph a -> [[Ix a]]
-  ,iscc2_0    :: Graph a -> [(Int, [Ix a])]
-  ,iscc3_0    :: Graph a -> IntMap [Ix a]
-  ,iscc4_0    :: Graph a -> IntMap (IxSet_ a)
-  --
-  ,scc_0      :: Graph a -> [SCC (Ix a) [Ix a]]
-  ,scc2_0     :: Graph a -> [(Int, SCC (Ix a) [Ix a])]
-  ,scc3_0     :: Graph a -> IntMap (SCC (Ix a) [Ix a])
-  ,scc4_0     :: Graph a -> IntMap (SCC (Ix a) (IxSet_ a))}
-#endif
+sccGetNodeComp :: SCC a b -> Node a -> Node b
+sccGetNodeComp Comps{compsPart=(n2c,_)} node = n2c Ix.! node
 
-#if 0
-module MM.Algo.Graph.SCC.Kosaraju where
-{
-  -- ///////////////////////////////
-  sccMap  :: Graph -> NodeMap Int
-  -- ///////////////////////////////
-  iscc    :: Graph -> [[Node]]
-  iscc2   :: Graph -> [(Int, [Node])]
-  itopo   :: Graph -> [Node]
-  scc2    :: (Ord a) => [(a, [a])] -> [(Int, [a])]
-  topo    :: (Ord a) => [(a, [a])] -> [a]
-}
-module MM.Algo.Graph.SCC.Tarjan where
-{
-  -- ///////////////////////////////
-  tarjan_ :: Graph -> [[Node]]
-  -- ///////////////////////////////
-  tarjan  :: Graph -> [SCC Node [Node]]
-}
-#endif
+sccAcyclicComps :: SCC a b -> NodeSet b
+sccAcyclicComps = sccCompsWithCyclicity Acyclic
+
+sccCyclicComps :: SCC a b -> NodeSet b
+sccCyclicComps = sccCompsWithCyclicity Cyclic
+
+sccCompsWithCyclicity :: Cyclicity -> SCC a b -> NodeSet b
+sccCompsWithCyclicity cyc Comps{compsData=SCCData{..}}
+  = M.findWithDefault mempty cyc sccDataFrom
+
+sccAcyclicNodes :: SCC a b -> NodeSet a
+sccAcyclicNodes = sccNodesWithCyclicity Acyclic
+
+sccCyclicNodes :: SCC a b -> NodeSet a
+sccCyclicNodes = sccNodesWithCyclicity Cyclic
+
+sccNodesWithCyclicity :: Cyclicity -> SCC a b -> NodeSet a
+sccNodesWithCyclicity cyc Comps{compsData=SCCData{..},..}
+  | comps <- M.findWithDefault mempty cyc sccDataFrom
+  , (_,c2ns) <- compsPart
+  , let go i _ o = o \/ (c2ns Ix.! i)
+  = Ix.foldWithKey go mempty comps
+
+sccTopo :: SCC a b -> [NodeSet a]
+sccTopo Comps{compsPart} = fromPartition compsPart
+
+sccTopoAssertAcyclic :: SCC a b -> Either (NodeSet b) [Node a]
+sccTopoAssertAcyclic scc
+  | cyclic <- sccCyclicComps scc
+  = case Ix.null cyclic of
+      True-> Right (Ix.keys =<< sccTopo scc)
+      False-> Left cyclic
+
+-- {{{
+type SccM x a = SU.S (SCCEnv x) a
+data SCCEnv x = SCCEnv
+  {sccEnvGraph   :: Graph x
+  ,sccEnvIndex   :: NodeMap x Int
+  ,sccEnvLowLink :: NodeMap x Int
+  ,sccEnvStacked :: NodeSet x
+  ,sccEnvStack   :: [Node x]
+  ,sccEnvSCCs    :: [NodeSet x]}
+execSccM :: SccM x a -> SCCEnv x -> SCCEnv x
+execSccM m env | (_,(_,env)) <- N.runM m 0 env = env
+initSCCEnv :: Graph x -> SCCEnv x
+initSCCEnv g = SCCEnv
+  {sccEnvGraph   = g
+  ,sccEnvIndex   = mempty
+  ,sccEnvLowLink = mempty
+  ,sccEnvStacked = mempty
+  ,sccEnvStack   = []
+  ,sccEnvSCCs    = []}
+sccTarjanM :: SccM x ()
+sccTarjanM = mapM_ go =<< N.gets (Ix.keys . nodes . sccEnvGraph)
+  where go i = do
+          o <- sccSeenM i
+          case o of
+            False-> sccM i
+            True-> return ()
+sccM :: Node x -> SccM x ()
+sccM i = do
+  sccPushM i
+  ss <- sccSuccsM i
+  mapM_ (sccDoSuccM i) (Ix.keys ss)
+  ix <- sccIndexM i
+  ll <- sccLowLinkM i
+  case ix==ll of
+    True-> sccPopToAndAddSccM i
+    False-> return ()
+sccDoSuccM :: Node x -> Node x -> SccM x ()
+sccDoSuccM i j = do
+  o <- sccSeenM j
+  case o of
+    False-> do
+      sccM j
+      sccSetLowLinkToMin i =<< sccLowLinkM j
+    True-> do
+      o <- sccStackedM j
+      case o of
+        False-> return ()
+        True-> sccSetLowLinkToMin i =<< sccIndexM j
+sccPopToAndAddSccM :: Node x -> SccM x ()
+sccPopToAndAddSccM i = do
+  SCCEnv{..} <- N.get
+  case () of
+    _ | (comp,sccEnvStack) <- split i sccEnvStack
+      , !sccEnvStacked <- foldl' (flip Ix.delete) sccEnvStacked comp
+      , sccEnvSCCs <- Ix.fromList (zip comp (repeat ())):sccEnvSCCs
+      , !new <- SCCEnv{..}
+      -> N.set new
+  where split i js = go [] js
+          where go acc [] = (acc,[])
+                go acc (j:js)
+                  | i==j = (i:acc,js)
+                  | otherwise = go (j:acc) js
+sccIndexM :: Node x -> SccM x Int
+sccIndexM i = N.gets ((Ix.! i) . sccEnvIndex)
+sccLowLinkM :: Node x -> SccM x Int
+sccLowLinkM i = N.gets ((Ix.! i) . sccEnvLowLink)
+sccSetLowLinkToMin :: Node x -> Int -> SccM x ()
+sccSetLowLinkToMin i m = do
+  lowlink <- N.gets sccEnvLowLink
+  let !new = Ix.adjust (min m) i lowlink
+  N.modify(\e->e{sccEnvLowLink=new})
+sccPushM :: Node x -> SccM x ()
+sccPushM i = do
+  m <- N.newUniqM
+  SCCEnv{..} <- N.get
+  case () of
+    _ | !index      <- m - 1
+      , !sccEnvIndex   <- Ix.insert i index sccEnvIndex
+      , !sccEnvLowLink <- Ix.insert i index sccEnvLowLink
+      , !sccEnvStacked <- Ix.insert i () sccEnvStacked
+      , !sccEnvStack   <- i:sccEnvStack
+      , !new        <- SCCEnv{..}
+      -> N.set new
+sccSeenM :: Node x -> SccM x Bool
+sccSeenM i = N.gets (Ix.member i . sccEnvIndex)
+sccSuccsM :: Node x -> SccM x (NodeSet x)
+sccSuccsM i = N.gets ((Ix.! i) . sccEnvGraph)
+sccStackedM :: Node x -> SccM x Bool
+sccStackedM i = N.gets (Ix.member i . sccEnvStacked)
+-- }}}
 
 -----------------------------------------------------------------------------
 
 data DFN a = DFN
-  {dfnN2Pre :: IxMap a Int
-  ,dfnN2Post :: IxMap a Int
-  ,dfnPre2N :: IntMap (Ix a)
-  ,dfnPost2N :: IntMap (Ix a)}
+  {dfnN2Pre :: NodeMap a Int
+  ,dfnN2Post :: NodeMap a Int
+  ,dfnPre2N :: IntMap (Node a)
+  ,dfnPost2N :: IntMap (Node a)}
   __D
 
-data DFSEdge
-  = TreeDFSEdge
-  | ForwardDFSEdge
-  | BackwardDFSEdge
-  | CrossDFSEdge
+data DFNEdge
+  = TreeDFNEdge
+  | ForwardDFNEdge
+  | BackwardDFNEdge
+  | CrossDFNEdge
   __D_BE
 
-dfnPre :: DFN a -> Ix a -> Int
-dfnPost :: DFN a -> Ix a -> Int
-dfnPreOrder :: DFN a -> [Ix a]
-dfnPostOrder :: DFN a -> [Ix a]
-dfnRevPreOrder :: DFN a -> [Ix a]
-dfnRevPostOrder :: DFN a -> [Ix a]
-dfnPre DFN{dfnN2Pre} i = dfnN2Pre Ix.! i
-dfnPost DFN{dfnN2Post} i = dfnN2Post Ix.! i
-dfnPreOrder DFN{dfnPre2N} = IM.elems dfnPre2N
-dfnPostOrder DFN{dfnPost2N} = IM.elems dfnPost2N
-dfnRevPreOrder dfn = reverse (dfnPreOrder dfn)
-dfnRevPostOrder dfn = reverse (dfnPostOrder dfn)
+dfnInit :: Graph a -> Node a -> DFN a
+dfnInit g root
+  | Dfs{..} <- dfs (root,g)
+  , !dfnN2Pre <- dfsCallNum
+  , !dfnN2Post <- dfsCompNum
+  , !dfnPre2N <- Ix.foldWithKey (\i n acc-> IM.insert n i acc) mempty dfnN2Pre
+  , !dfnPost2N <- Ix.foldWithKey (\i n acc-> IM.insert n i acc) mempty dfnN2Post
+  = DFN{..}
 
-dfnClassifyEdge :: DFN a -> Ix a -> Ix a -> DFSEdge
+dfnClassifyEdge :: DFN a -> Node a -> Node a -> DFNEdge
 dfnClassifyEdge DFN{..} i j
   | idn <- dfnN2Pre Ix.! i
   , jdn <- dfnN2Pre Ix.! j
@@ -402,63 +609,69 @@ dfnClassifyEdge DFN{..} i j
   , p1 <- idn < jdn
   , p2 <- icn < jcn
   = case (p1,p2) of
-      (True,True)-> TreeDFSEdge
-      (True,False)-> ForwardDFSEdge
-      (False,True)-> BackwardDFSEdge
-      (False,False)-> CrossDFSEdge
+      (True,True)-> TreeDFNEdge
+      (True,False)-> ForwardDFNEdge
+      (False,True)-> BackwardDFNEdge
+      (False,False)-> CrossDFNEdge
 
-dfnInit :: Graph a -> Ix a -> DFN a
-dfnInit g root
-  | Dfs{..} <- dfs (root,g)
-  , !dfnN2Pre <- dfsCallNum
-  , !dfnN2Post <- dfsCompNum
-  , !dfnPre2N <- Ix.foldWithKey (\i n acc-> IM.insert n i acc) mempty dfnN2Pre
-  , !dfnPost2N <- Ix.foldWithKey (\i n acc-> IM.insert n i acc) mempty dfnN2Post
-  = DFN{..}
+dfnPre :: DFN a -> Node a -> Int
+dfnPost :: DFN a -> Node a -> Int
+dfnPre DFN{dfnN2Pre} i = dfnN2Pre Ix.! i
+dfnPost DFN{dfnN2Post} i = dfnN2Post Ix.! i
+
+dfnPreOrder :: DFN a -> [Node a]
+dfnPostOrder :: DFN a -> [Node a]
+dfnRevPreOrder :: DFN a -> [Node a]
+dfnRevPostOrder :: DFN a -> [Node a]
+dfnPreOrder DFN{dfnPre2N} = IM.elems dfnPre2N
+dfnPostOrder DFN{dfnPost2N} = IM.elems dfnPost2N
+dfnRevPreOrder dfn = reverse (dfnPreOrder dfn)
+dfnRevPostOrder dfn = reverse (dfnPostOrder dfn)
+
 -- {{{
 data Dfs a = Dfs
-  {dfsSpanning  :: (Ix a, Graph a)
-  ,dfsCallNum   :: IxMap a Int
-  ,dfsCompNum   :: IxMap a Int} __D
-dfs :: (Ix a, Graph a) -> Dfs a
+  {dfsSpanning  :: (Node a, Graph a)
+  ,dfsCallNum   :: NodeMap a Int
+  ,dfsCompNum   :: NodeMap a Int} __D
+dfs :: (Node a, Graph a) -> Dfs a
 dfs rg@(r,g)
   | DfsEnv{..}  <- execDfsM (dfsM r) (initDfsEnv rg)
   = Dfs
       (dfsEnvRoot,dfsEnvSpanning)
       (dfsEnvCallMap)
       (dfsEnvCompMap)
-type DfsM t a = U2.S (DfsEnv t) a
+type DfsM t a = SU2.S (DfsEnv t) a
 data DfsEnv a = DfsEnv
-  {dfsEnvRoot :: !(Ix a) -- RO
+  {dfsEnvRoot :: !(Node a) -- RO
   ,dfsEnvGraph :: Graph a -- RO
   ,dfsEnvSpanning :: Graph a -- WO
-  ,dfsEnvSeenNodes :: IxSet_ a -- RW
-  ,dfsEnvCallMap :: IxMap a Int -- WO
-  ,dfsEnvCompMap :: IxMap a Int} -- WO
-dfsM :: Ix a -> DfsM a ()
+  ,dfsEnvSeenNodes :: NodeSet a -- RW
+  ,dfsEnvCallMap :: NodeMap a Int -- WO
+  ,dfsEnvCompMap :: NodeMap a Int} -- WO
+dfsM :: Node a -> DfsM a ()
 dfsM v = do
-  setCallM v
-  addSeenM v
-  vs <- succsM v
+  dfsSetCallM v
+  dfsAddSeenM v
+  vs <- dfsSuccsM v
   mapM_ (go v) (Ix.keys vs)
-  setCompM v
+  dfsSetCompM v
   return ()
-  where go :: Ix a -> Ix a -> DfsM a ()
+  where go :: Node a -> Node a -> DfsM a ()
         go u v = do
-          seen <- seenM v
+          seen <- dfsSeenM v
           case seen of
             True-> return ()
             False-> do
-              setCallM v
-              addSeenM v
+              dfsSetCallM v
+              dfsAddSeenM v
               addTreeEdgesM u (Ix.singleton v ())
-              vs <- succsM v
+              vs <- dfsSuccsM v
               mapM_ (go v) (Ix.keys vs)
-              setCompM v
+              dfsSetCompM v
               return ()
 execDfsM :: DfsM t a -> DfsEnv t -> DfsEnv t
-execDfsM m env | (_,_,env) <- U2.execS m 1 1 env = env
-initDfsEnv :: (Ix a, Graph a) -> DfsEnv a
+execDfsM m env | (_,(_,_,env)) <- N.runM m 1 1 env = env
+initDfsEnv :: (Node a, Graph a) -> DfsEnv a
 initDfsEnv (r,g) = DfsEnv
   {dfsEnvRoot = r
   ,dfsEnvGraph = g
@@ -466,112 +679,317 @@ initDfsEnv (r,g) = DfsEnv
   ,dfsEnvSeenNodes = mempty
   ,dfsEnvCallMap = mempty
   ,dfsEnvCompMap = mempty}
-addTreeEdgesM :: Ix a -> IxSet_ a -> DfsM a ()
+addTreeEdgesM :: Node a -> NodeSet a -> DfsM a ()
 addTreeEdgesM v ws = do
-  spant <- U2.gets dfsEnvSpanning
-  U2.modify(\e->e{dfsEnvSpanning
+  spant <- N.gets dfsEnvSpanning
+  N.modify(\e->e{dfsEnvSpanning
     =Ix.insertWith Ix.union v ws spant})
-seenM :: Ix a -> DfsM a Bool
-seenM v = U2.gets ((v`Ix.member`) . dfsEnvSeenNodes)
-succsM :: Ix a -> DfsM a (IxSet_ a)
-succsM v = U2.gets ((Ix.! v) . dfsEnvGraph)
-unseenM :: IxSet_ a -> DfsM a (IxSet_ a)
-unseenM s = U2.gets
+dfsSeenM :: Node a -> DfsM a Bool
+dfsSeenM v = N.gets ((v`Ix.member`) . dfsEnvSeenNodes)
+dfsSuccsM :: Node a -> DfsM a (NodeSet a)
+dfsSuccsM v = N.gets ((Ix.! v) . dfsEnvGraph)
+dfsUnSeenM :: NodeSet a -> DfsM a (NodeSet a)
+dfsUnSeenM s = N.gets
   ((s `Ix.difference`)
     . dfsEnvSeenNodes)
-addSeenM :: Ix a -> DfsM a ()
-addSeenM i = unionSeenM (Ix.singleton i ())
-unionSeenM :: IxSet_ a -> DfsM a ()
-unionSeenM s = do
-  seen <- U2.gets dfsEnvSeenNodes
-  U2.modify(\e->e{dfsEnvSeenNodes=seen`Ix.union`s})
-nextCallM :: DfsM a Int
-nextCallM = newUniq1M
-nextCompM :: DfsM a Int
-nextCompM = newUniq2M
-setCallM :: Ix a -> DfsM a ()
-setCallM v = do
-  dn <- nextCallM
-  dnm <- U2.gets dfsEnvCallMap
-  U2.modify(\e->e{dfsEnvCallMap=Ix.insert v dn dnm})
-setCompM :: Ix a -> DfsM a ()
-setCompM v = do
-  cn <- nextCompM
-  cnm <- U2.gets dfsEnvCompMap
-  U2.modify(\e->e{dfsEnvCompMap=Ix.insert v cn cnm})
+dfsAddSeenM :: Node a -> DfsM a ()
+dfsAddSeenM i = dfsUnionSeenM (Ix.singleton i ())
+dfsUnionSeenM :: NodeSet a -> DfsM a ()
+dfsUnionSeenM s = do
+  seen <- N.gets dfsEnvSeenNodes
+  N.modify(\e->e{dfsEnvSeenNodes=seen`Ix.union`s})
+dfsNextCallM :: DfsM a Int
+dfsNextCallM = N.newUniq1M
+dfsNextCompM :: DfsM a Int
+dfsNextCompM = N.newUniq2M
+dfsSetCallM :: Node a -> DfsM a ()
+dfsSetCallM v = do
+  dn <- dfsNextCallM
+  dnm <- N.gets dfsEnvCallMap
+  N.modify(\e->e{dfsEnvCallMap=Ix.insert v dn dnm})
+dfsSetCompM :: Node a -> DfsM a ()
+dfsSetCompM v = do
+  cn <- dfsNextCompM
+  cnm <- N.gets dfsEnvCompMap
+  N.modify(\e->e{dfsEnvCompMap=Ix.insert v cn cnm})
 -- }}}
 
 -----------------------------------------------------------------------------
 
-#if 0
-data BFN a = BFN
-  {bfnN2Pre :: IxMap a Int
-  ,bfnN2Post :: IxMap a Int
-  ,bfnPre2N :: IntMap (Ix a)
-  ,bfnPost2N :: IntMap (Ix a)}
+-- | Partition-Refinement. Abstract datatype.
+data PartRefine a b = PartRefine
+  {partRefinePart :: PartRefinePart a b
+  ,partRefineDeltaInv :: DeltaInv a}
+  __D
+type EdgeLbl = Int
+type EdgeLblMap = IntMap
+type DeltaInv a = EdgeLblMap (NodeMap a (NodeSet a))
+-- hidden
+type PartRefineSize = Int
+data PartRefinePart a b = PRP
+  {prpNext   :: !(Node b)
+  ,prpC2Size :: NodeMap b PartRefineSize
+  ,prpN2C    :: NodeMap a (Node b)
+  ,prpClass  :: NodeMap b (NodeSet a)}
   __D
 
-bfnInit :: Graph a -> Ix a -> BFN a
-bfnPre :: BFN a -> Ix a -> Int
-bfnPost :: BFN a -> Ix a -> Int
-bfnPreOrder :: BFN a -> [Ix a]
-bfnPostOrder :: BFN a -> [Ix a]
-bfnRevPreOrder :: BFN a -> [Ix a]
-bfnRevPostOrder :: BFN a -> [Ix a]
-bfnPre BFN{bfnN2Pre} i = bfnN2Pre Ix.! i
-bfnPost BFN{bfnN2Post} i = bfnN2Post Ix.! i
-bfnPreOrder BFN{bfnPre2N} = IM.elems bfnPre2N
-bfnPostOrder BFN{bfnPost2N} = IM.elems bfnPost2N
-bfnRevPreOrder bfn = reverse (bfnPreOrder bfn)
-bfnRevPostOrder bfn = reverse (bfnPostOrder bfn)
+class PartRefinePrep a b x where
+  partRefinePrep :: x -> (Partition a b , DeltaInv a)
+instance PartRefinePrep a b (Partition a b, DeltaInv a) where
+  partRefinePrep = id
 
--- | XXX:IMPLEMENTME
-bfnInit g root = undefined
-#endif
+partRefineInit :: forall a b x . (PartRefinePrep a b x) => x -> PartRefine a b
+partRefineInit a
+  | (part, dinv) <- partRefinePrep a
+  = go part dinv
+  where go :: Partition a b -> DeltaInv a -> PartRefine a b
+        go (n2i,i2ns) dinv
+          | Ix.null n2i || Ix.null i2ns || IM.null dinv
+          = PartRefine
+              {partRefinePart=PRP 0 mempty mempty mempty
+              ,partRefineDeltaInv=mempty}
+          | prpNext <- 1 + maxKey i2ns
+          , prpC2Size <- fmap Ix.size i2ns
+          , prpN2C <- n2i
+          , prpClass <- i2ns
+          , partRefinePart <- PRP{..}
+          , partRefineDeltaInv <- dinv
+          = PartRefine{..}
+          where maxKey m
+                  | Just ((k,_),_) <- Ix.maxViewWithKey m = k
+                  | otherwise = __IMPOSSIBLE
+
+partRefinePartition :: PartRefine a b -> Partition a b
+partRefinePartition PartRefine{..}
+  | PRP{..} <- partRefinePart
+  = (prpN2C, prpClass)
+
+-- | Hopcroft's Partition-Refinement Algorithm
+partRefineRefine :: forall a b. PartRefine a b -> PartRefine a b
+partRefineRefine PartRefine{..}
+  | partRefinePart <- hopcroft partRefineDeltaInv partRefinePart
+  = PartRefine{..}
+  where hopcroft :: DeltaInv a -> PartRefinePart a b -> PartRefinePart a b
+        hopcroft dinv part = go (part, toSets part)
+          where elbls = edgeLbls dinv
+                go :: PartRefineStepState a b -> PartRefinePart a b
+                go (ps,[]) = ps
+                go (ps,l:ls) = go (fold l (ps,ls))
+                fold l s = foldl' (\s elbl->
+                  partRefineStep s (deltaInv dinv elbl l)
+                  ) s elbls
+                toSets :: PartRefinePart a b -> [NodeSet a]
+                toSets PRP{..} = Ix.elems prpClass
+                edgeLbls :: DeltaInv a -> [EdgeLbl]
+                edgeLbls = IM.keys
+                deltaInv :: DeltaInv a -> EdgeLbl -> NodeSet a -> NodeSet a
+                deltaInv dinv e ns
+                  = Ix.fold (\/) mempty
+                      ((IM.findWithDefault mempty e dinv) `Ix.intersection` ns)
+
+type PartRefineStepState a b = (PartRefinePart a b, [NodeSet a])
+partRefineStep :: forall a b . PartRefineStepState a b -> NodeSet a -> PartRefineStepState a b
+partRefineStep s a = go s a
+  where go s@(PRP{prpN2C},_) a
+          | Ix.null a = s
+          | i <- minKey a
+          , cls <- prpN2C Ix.! i
+          , (snew, anew) <- refineOne s cls a
+          = go snew anew
+        minKey m
+          | Just ((k,_),_) <- Ix.minViewWithKey m = k
+          | otherwise = __IMPOSSIBLE
+        refineOne
+          :: PartRefineStepState a b -> Node b
+          -> NodeSet a -> (PartRefineStepState a b, NodeSet a)
+        refineOne s@(part@PRP{prpClass},ls) cls dinv
+          | p <- prpClass Ix.! cls
+          , p1 <- p/\dinv
+          , p2 <- p\\p1
+          , xdinv <- dinv\\p -- this is an optimization
+          , o1 <- Ix.null p1
+          , o2 <- Ix.null p2
+          = case (o1,o2) of
+              (True,True)-> __IMPOSSIBLE
+              (True,False) | __ASSERT(p == p2)-> (s, xdinv)
+              (False,True) | __ASSERT(p == p1)-> (s, xdinv)
+              (False,False)
+                | (part, p0) <- split part cls p1 p2
+                -> ((part, p0:ls), xdinv)
+        split
+          :: PartRefinePart a b -> Node b
+          -> NodeSet a -> NodeSet a
+          -> (PartRefinePart a b, NodeSet a)
+        -- Splits the smaller of the two sets into a new class, and
+        -- returns the smaller one. It MUST be the case and is UNCHECKED
+        -- that the two sets are NONMEMPTY. And it MUST be the case and
+        -- is UNCHECKED that the two sets form a partition of the class
+        -- identified by the @Int@.
+        split PRP{..} cls p1 p2
+          | n1 <- Ix.size p1 -- XXX: O(n)
+          , n2 <- (prpC2Size Ix.! cls) - n1
+          , let go x1 x2 m1 m2
+                  | !new <- prpNext
+                  , !prpNext <- prpNext + 1
+                  , !prpN2C <- fmap (const new) x2`Ix.union`prpN2C
+                  , !prpC2Size <- Ix.insert cls m1 prpC2Size
+                  , !prpC2Size <- Ix.insert new m2 prpC2Size
+                  , !prpClass <- Ix.insert cls x1 prpClass
+                  , !prpClass <- Ix.insert new x2 prpClass
+                  = PRP{..}
+          = case n1 <= n2 of
+              True  | !out <- go p1 p2 n1 n2-> (out, p1)
+              False | !out <- go p2 p1 n2 n1-> (out, p2)
 
 -----------------------------------------------------------------------------
 
-#if 0
--- | Compute the /Cyclomatic Complexity/
---  of each connected component of the input graph.
-cyclomatic :: Graph -> [(Int, Graph)]
-cyclomatic g
-  | IM.null g = [(0,mempty)]
-  | !gs <- cc g
-  = fmap go gs
+data NodeKey k = UniqKey | NodeKey k __D
+class (Ord k) => NodeKeyed k a | a -> k where
+  nodeKey :: a -> NodeKey k
+
+-----------------------------------------------------------------------------
+
+-- | @partRefinePartition . partRefineRefine . partRefineInit@
+shareCyclic :: (Ord k) => NodeMap a (k, [Node a]) -> Partition a a
+shareCyclic dfa
+  | o <- partRefineInit dfa
+  , o <- partRefineRefine o
+  = partRefinePartition o
+
+-- | There is a lot of copy-paste duplication in the next threee instances:
+instance (Ord k) => PartRefinePrep a a (NodeMap a (k, EdgeLblMap (Node a))) where
+  partRefinePrep dfa
+    | (dinv,kpart) <- Ix.foldWithKey go mempty dfa
+    , part <- toPartition (M.elems kpart)
+    = (part, dinv)
+    where go i (key,js) (dinv,part)
+            | part <- M.insertWith (\/) key (Ix.singleton i ()) part
+            , dinv <- updateDeltaInv i js dinv
+            = (dinv,part)
+          updateDeltaInv :: Node a -> EdgeLblMap (Node a) -> DeltaInv a -> DeltaInv a
+          updateDeltaInv i js dinv
+            = IM.foldWithKey go dinv js
+            where !iset = Ix.singleton i ()
+                  go pos j dinv = IM.insertWith (\/)
+                    pos (Ix.singleton j iset) dinv
+instance (Ord k) => PartRefinePrep a a (NodeMap a (k, [Node a])) where
+  partRefinePrep dfa
+    | (dinv,kpart) <- Ix.foldWithKey go mempty dfa
+    , part <- toPartition (M.elems kpart)
+    = (part, dinv)
+    where go i (key,js) (dinv,part)
+            | part <- M.insertWith (\/) key (Ix.singleton i ()) part
+            , dinv <- updateDeltaInv i js dinv
+            = (dinv,part)
+          updateDeltaInv :: Node a -> [Node a] -> DeltaInv a -> DeltaInv a
+          updateDeltaInv i js dinv
+            = IM.foldWithKey go dinv (IM.fromList . zip [0..] $ js)
+            where !iset = Ix.singleton i ()
+                  go pos j dinv = IM.insertWith (\/)
+                    pos (Ix.singleton j iset) dinv
+data MyNodeKey a k = MyUniqKey !(Node a) | MyNodeKey k deriving(Eq,Ord)
+instance (Ord k) => PartRefinePrep a a (NodeMap a (NodeKey k, [Node a])) where
+  partRefinePrep dfa
+    | (dinv,kpart) <- Ix.foldWithKey go mempty dfa
+    , part <- toPartition (M.elems kpart)
+    = (part, dinv)
+    where go i (key,js) (dinv,part)
+            | newkey <- case key of
+                UniqKey-> MyUniqKey i
+                NodeKey k-> MyNodeKey k
+            , part <- M.insertWith (\/) newkey (Ix.singleton i ()) part
+            , dinv <- updateDeltaInv i js dinv
+            = (dinv,part)
+          updateDeltaInv :: Node a -> [Node a] -> DeltaInv a -> DeltaInv a
+          updateDeltaInv i js dinv
+            = IM.foldWithKey go dinv (IM.fromList . zip [0..] $ js)
+            where !iset = Ix.singleton i ()
+                  go pos j dinv = IM.insertWith (\/)
+                    pos (Ix.singleton j iset) dinv
+
+-----------------------------------------------------------------------------
+
+flattenAcyclicToOneLevel
+  :: Graph a
+  -> NodeMap a dontcare
+  -> Either (NodeMap b (NodeSet a)) (Graph a)
+flattenAcyclicToOneLevel g keep
+  | o <- go g
+  = case o of
+      Left{}-> o
+      Right g
+        | g  <- g`Ix.intersection`keep
+        , g <- fmap (`Ix.difference`keep) g
+        -> Right g
   where go g
-          | p   <- 1 {-one component-}
-          , n   <- length (nodes g)
-          , e   <- length (edges g)
-          , nr  <- IS.size (rootsG g)
-          = case nr==0 {-wlog-} of
-              True{-strongly conn-}
-                | !b1 <- e - n + p
-                {-first betti number-}
-                -> (b1, g)
-              False
-                | nl  <- IS.size (leavesG g)
-                  {-simulate:
-                      1) Add a new node.
-                      2) Add an edge from each
-                         leaf to this new node.
-                      3) For each root, add an
-                         edge from this new node
-                         to that root.-}
-                , n   <- n + 1
-                , e   <- e + nr + nl
-                , !b1 <- e - n + p
-                {-first betti number-}
-                -> (b1, g)
--- | The /first Betti number/ of the input graph.
-betti1 :: Graph -> Int
-betti1 g
-  | p <- length (cc g)
-  , n <- length (nodes g)
-  , e <- length (edges g)
-  = e - n + p
-#endif
+          | scc <- sccInit g
+          , topo <- sccTopoAssertAcyclic scc
+          = case topo of
+              Left comps
+                | let go c _ = sccGetCompNodes scc c
+                -> Left (Ix.mapWithKey go comps)
+              Right ns
+                | tclos <- foldl' step g ns
+                -> Right tclos
+          where step acc i
+                  | js <- g Ix.! i
+                  , ks <- Ix.foldWithKey (\j _ o-> o \/ (acc Ix.! j)) js js
+                  = Ix.insert i ks acc
 
 -----------------------------------------------------------------------------
-#endif
 
+shareOneLevel :: (Ord k) => NodeMap a (k, [Node a]) -> Partition a a
+shareOneLevel = toPartition . fst . flip shareOneLevelWith mempty
+
+shareAcyclic :: (Ord k) => NodeMap a (k, [Node a]) -> Partition a a
+shareAcyclic = toPartition . fst . flip shareAcyclicWith mempty
+
+type MemoTrie a b k = Map k (IxTrie b (Node a))
+
+shareOneLevelWith :: (Ord k) => NodeMap a (k, [Node a]) -> MemoTrie a a k -> (NodeMap a (Node a), MemoTrie a a k)
+shareOneLevelWith g memo = Ix.foldWithKey go (mempty,memo) g
+  where go i (k,js) (rn,memo)
+          | Just trie <- M.lookup k memo
+          = case IxT.lookup js trie of
+              Just new-> rnTo i new rn memo
+              Nothing-> add i k js rn memo trie
+          | otherwise = add i k js rn memo IxT.empty
+        add old k js rn memo trie
+          | !trie <- IxT.insert js old trie
+          , !memo <- M.insert k trie memo
+          , !rn   <- Ix.insert old old rn
+          = (rn,memo)
+        rnTo old new rn memo
+          | !rn <- Ix.insert old new rn
+          = (rn,memo)
+
+shareAcyclicWith :: (Ord k) => NodeMap a (k, [Node a]) -> MemoTrie a a k -> (NodeMap a (Node a), MemoTrie a a k)
+shareAcyclicWith dfa memo
+  | ns <- topo dfa
+  , (rn,memo) <- foldl' go (mempty,memo) ns
+  = (rn,memo)
+  where topo dfa
+          | g <- fmap (fromList . flip zip (repeat ()) . snd) $ dfa
+          , nss <- sccTopo . sccInit . legalize $ g
+          = concatMap (Ix.keys . (`Ix.intersection` dfa)) nss
+        go (rn,memo) i
+          | (k,js) <- dfa Ix.! i
+          , js <- rename rn js
+          = case () of
+              _ | Just trie <- M.lookup k memo
+                -> case IxT.lookup js trie of
+                    Just new-> rnTo i new rn memo
+                    Nothing-> add i k js rn memo trie
+                | otherwise-> add i k js rn memo IxT.empty
+        rename rn js = fmap go js
+          where go j = maybe j id (Ix.lookup j rn)
+        add old k js rn memo trie
+          | !trie <- IxT.insert js old trie
+          , !memo <- M.insert k trie memo
+          , !rn   <- Ix.insert old old rn
+          = (rn,memo)
+        rnTo old new rn memo
+          | !rn <- Ix.insert old new rn
+          = (rn,memo)
+
+-----------------------------------------------------------------------------
