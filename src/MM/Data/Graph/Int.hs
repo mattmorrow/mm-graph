@@ -24,7 +24,7 @@
 #define __ASSERT_DO(cond)\
   (if (cond) then True else (__ASSERT_FAIL(#cond)))
 #define HASH #
-#define __INLINE(x)   {-HASH INLINE x HASH-}
+#define __INLINE(x) {-HASH INLINE x HASH-}
 
 module MM.Data.Graph.Int (
    Graph,PredGraph,Node,NodeMap,NodeSet
@@ -91,9 +91,7 @@ import MM.Data.Tree.Rose(Tree(..))
 import qualified MM.Control.Monad.S.U as SU
 import qualified MM.Control.Monad.S.U2 as SU2
 import qualified MM.Control.Monad.Class as N
-import MM.Data.Class.Empty
-import MM.Data.Class.List
-import MM.Data.Class.O
+import MM.Data.Class.Base
 
 -----------------------------------------------------------------------------
 
